@@ -40,8 +40,8 @@ const WFC_TILES: WFCTile[] = [
   { type: 1, connections: { north: true, east: true, south: false, west: true }, weight: 3 },
   { type: 1, connections: { north: false, east: true, south: true, west: true }, weight: 3 },
   // Straight roads
-  { type: 1, connections: { north: true, east: false, south: true, west: false }, weight: 10 },
-  { type: 1, connections: { north: false, east: true, south: false, west: true }, weight: 10 },
+  { type: 1, connections: { north: true, east: false, south: true, west: false }, weight: 4 },
+  { type: 1, connections: { north: false, east: true, south: false, west: true }, weight: 4 },
   // Corners
   { type: 1, connections: { north: true, east: true, south: false, west: false }, weight: 5 },
   { type: 1, connections: { north: true, east: false, south: false, west: true }, weight: 5 },
@@ -318,6 +318,7 @@ const rightPanel = document.getElementById("right-panel") as HTMLDivElement;
 const bottomBar = document.getElementById("bottom-bar") as HTMLDivElement;
 const modal = document.getElementById("modal") as HTMLDivElement;
 const toast = document.getElementById("toast") as HTMLDivElement;
+const compassNeedle = document.querySelector(".compass-needle") as HTMLDivElement | null;
 
 let viewMode = 0;
 let simSpeed = 1;
@@ -726,6 +727,11 @@ function updateCamera() {
 
   audioEngine.updateListener(eyeX, eyeY, eyeZ, centerX, 0, centerZ);
   audioEngine.setGameVolume(cameraDistance);
+
+  if (compassNeedle) {
+    const heading = -cameraAngle * (180 / Math.PI);
+    compassNeedle.style.transform = `rotate(${heading}deg)`;
+  }
 }
 
 function projectToScreen(pos: { x: number; y: number; z: number }) {
@@ -848,19 +854,19 @@ function generateMapWFC() {
   const corridorRows = new Set<number>();
   const corridorCols = new Set<number>();
   for (let y = 0; y < GRID_HEIGHT; y++) {
-    if (y % 6 === 2 && Math.random() > 0.35) {
+    if (y % 6 === 2 && Math.random() > 0.55) {
       corridorRows.add(y);
     }
   }
   for (let x = 0; x < GRID_WIDTH; x++) {
-    if (x % 5 === 2 && Math.random() > 0.4) {
+    if (x % 5 === 2 && Math.random() > 0.6) {
       corridorCols.add(x);
     }
   }
 
   const maxAttempts = 4;
-  const targetRoadRatio = 0.34;
-  const roadWeightAttempts = [0.55, 0.45, 0.38, 0.32];
+  const targetRoadRatio = 0.24;
+  const roadWeightAttempts = [0.35, 0.3, 0.26, 0.22];
   let finalGrid: Cell[] | null = null;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -910,18 +916,18 @@ function generateMapWFC() {
           const hasVertical = tile.connections.north || tile.connections.south;
           if (wantsHorizontal && !hasHorizontal) weight *= 0.1;
           if (wantsVertical && !hasVertical) weight *= 0.1;
-          if (wantsHorizontal && hasHorizontal) weight *= 1.6;
-          if (wantsVertical && hasVertical) weight *= 1.6;
+          if (wantsHorizontal && hasHorizontal) weight *= 1.2;
+          if (wantsVertical && hasVertical) weight *= 1.2;
         } else {
           weight *= 1.1;
         }
       } else if (isRoad) {
-        weight *= 0.35;
+        weight *= 0.2;
       }
       const x = idx % GRID_WIDTH;
       const y = Math.floor(idx / GRID_WIDTH);
       const edge = x === 0 || y === 0 || x === GRID_WIDTH - 1 || y === GRID_HEIGHT - 1;
-      if (edge && isRoad) weight *= 0.35;
+      if (edge && isRoad) weight *= 0.25;
       return weight;
     }
 
@@ -1176,11 +1182,17 @@ function buildBuildingInstances() {
           ? 2.0
           : tileType[i] === 4
             ? 1.6
-            : tileType[i] === 7
-              ? 1.2
-              : tileType[i] === 9
-                ? 2.4
-                : 0.8;
+            : tileType[i] === 5
+              ? 0.3
+              : tileType[i] === 6
+                ? 1.0
+                : tileType[i] === 7
+                  ? 0.6
+                  : tileType[i] === 8
+                    ? 1.1
+                    : tileType[i] === 9
+                      ? 2.2
+                      : 0.8;
     instances.push(x + 0.5, y + 0.5, height + (Math.sin(i) * 0.2 + 0.2), tileType[i]);
   }
   buildingInstances = new Float32Array(instances);
