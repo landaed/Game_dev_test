@@ -845,167 +845,202 @@ function generateMapWFC() {
     collapsed: boolean;
   }
 
-  const grid: Cell[] = [];
-  for (let i = 0; i < TILE_COUNT; i++) {
-    grid[i] = {
-      possibilities: WFC_TILES.map((_, idx) => idx),
-      collapsed: false
-    };
-  }
-
-  const corridorMask = new Uint8Array(TILE_COUNT);
+  const corridorRows = new Set<number>();
+  const corridorCols = new Set<number>();
   for (let y = 0; y < GRID_HEIGHT; y++) {
-    for (let x = 0; x < GRID_WIDTH; x++) {
-      let mask = 0;
-      if (y % 6 === 2) mask |= 1;
-      if (x % 5 === 2) mask |= 2;
-      corridorMask[indexFor(x, y)] = mask;
+    if (y % 6 === 2 && Math.random() > 0.35) {
+      corridorRows.add(y);
+    }
+  }
+  for (let x = 0; x < GRID_WIDTH; x++) {
+    if (x % 5 === 2 && Math.random() > 0.4) {
+      corridorCols.add(x);
     }
   }
 
-  function getNeighborIndices(idx: number) {
-    const x = idx % GRID_WIDTH;
-    const y = Math.floor(idx / GRID_WIDTH);
-    return {
-      north: y > 0 ? idx - GRID_WIDTH : null,
-      east: x < GRID_WIDTH - 1 ? idx + 1 : null,
-      south: y < GRID_HEIGHT - 1 ? idx + GRID_WIDTH : null,
-      west: x > 0 ? idx - 1 : null
-    };
-  }
+  const maxAttempts = 4;
+  const targetRoadRatio = 0.34;
+  const roadWeightAttempts = [0.55, 0.45, 0.38, 0.32];
+  let finalGrid: Cell[] | null = null;
 
-  function tileWeightForCell(idx: number, tileIdx: number) {
-    const tile = WFC_TILES[tileIdx];
-    let weight = tile.weight;
-    const mask = corridorMask[idx];
-    const isRoad = tile.type === 1;
-    if (mask > 0) {
-      if (isRoad) {
-        const wantsHorizontal = (mask & 1) === 1;
-        const wantsVertical = (mask & 2) === 2;
-        const hasHorizontal = tile.connections.east || tile.connections.west;
-        const hasVertical = tile.connections.north || tile.connections.south;
-        if (wantsHorizontal && !hasHorizontal) weight *= 0.1;
-        if (wantsVertical && !hasVertical) weight *= 0.1;
-        if (wantsHorizontal && hasHorizontal) weight *= 2.6;
-        if (wantsVertical && hasVertical) weight *= 2.6;
-      } else {
-        weight *= 0.12;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const grid: Cell[] = [];
+    for (let i = 0; i < TILE_COUNT; i++) {
+      grid[i] = {
+        possibilities: WFC_TILES.map((_, idx) => idx),
+        collapsed: false
+      };
+    }
+
+    const corridorMask = new Uint8Array(TILE_COUNT);
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+      for (let x = 0; x < GRID_WIDTH; x++) {
+        let mask = 0;
+        if (corridorRows.has(y)) mask |= 1;
+        if (corridorCols.has(x)) mask |= 2;
+        corridorMask[indexFor(x, y)] = mask;
       }
     }
-    const x = idx % GRID_WIDTH;
-    const y = Math.floor(idx / GRID_WIDTH);
-    const edge = x === 0 || y === 0 || x === GRID_WIDTH - 1 || y === GRID_HEIGHT - 1;
-    if (edge && isRoad) weight *= 0.5;
-    return weight;
-  }
 
-  function propagateConstraints(idx: number) {
-    const stack = [idx];
-    const visited = new Set<number>();
+    function getNeighborIndices(idx: number) {
+      const x = idx % GRID_WIDTH;
+      const y = Math.floor(idx / GRID_WIDTH);
+      return {
+        north: y > 0 ? idx - GRID_WIDTH : null,
+        east: x < GRID_WIDTH - 1 ? idx + 1 : null,
+        south: y < GRID_HEIGHT - 1 ? idx + GRID_WIDTH : null,
+        west: x > 0 ? idx - 1 : null
+      };
+    }
 
-    while (stack.length > 0) {
-      const current = stack.pop()!;
-      if (visited.has(current)) continue;
-      visited.add(current);
+    function tileWeightForCell(idx: number, tileIdx: number) {
+      const tile = WFC_TILES[tileIdx];
+      let weight = tile.weight;
+      const mask = corridorMask[idx];
+      const isRoad = tile.type === 1;
+      const roadBias = roadWeightAttempts[Math.min(attempt, roadWeightAttempts.length - 1)];
+      if (isRoad) {
+        weight *= roadBias;
+      }
+      if (mask > 0) {
+        if (isRoad) {
+          const wantsHorizontal = (mask & 1) === 1;
+          const wantsVertical = (mask & 2) === 2;
+          const hasHorizontal = tile.connections.east || tile.connections.west;
+          const hasVertical = tile.connections.north || tile.connections.south;
+          if (wantsHorizontal && !hasHorizontal) weight *= 0.1;
+          if (wantsVertical && !hasVertical) weight *= 0.1;
+          if (wantsHorizontal && hasHorizontal) weight *= 1.6;
+          if (wantsVertical && hasVertical) weight *= 1.6;
+        } else {
+          weight *= 1.1;
+        }
+      } else if (isRoad) {
+        weight *= 0.35;
+      }
+      const x = idx % GRID_WIDTH;
+      const y = Math.floor(idx / GRID_WIDTH);
+      const edge = x === 0 || y === 0 || x === GRID_WIDTH - 1 || y === GRID_HEIGHT - 1;
+      if (edge && isRoad) weight *= 0.35;
+      return weight;
+    }
 
-      const neighbors = getNeighborIndices(current);
-      const currentTile = grid[current];
+    function propagateConstraints(idx: number) {
+      const stack = [idx];
+      const visited = new Set<number>();
 
-      for (const [dir, neighborIdx] of Object.entries(neighbors)) {
-        if (neighborIdx === null) continue;
+      while (stack.length > 0) {
+        const current = stack.pop()!;
+        if (visited.has(current)) continue;
+        visited.add(current);
 
-        const validNeighbors = new Set<number>();
-        for (const possIdx of currentTile.possibilities) {
-          const tile = WFC_TILES[possIdx];
-          for (const neighPossIdx of grid[neighborIdx].possibilities) {
-            const neighTile = WFC_TILES[neighPossIdx];
-            if (tilesCompatible(tile, neighTile, dir as "north" | "east" | "south" | "west")) {
-              validNeighbors.add(neighPossIdx);
+        const neighbors = getNeighborIndices(current);
+        const currentTile = grid[current];
+
+        for (const [dir, neighborIdx] of Object.entries(neighbors)) {
+          if (neighborIdx === null) continue;
+
+          const validNeighbors = new Set<number>();
+          for (const possIdx of currentTile.possibilities) {
+            const tile = WFC_TILES[possIdx];
+            for (const neighPossIdx of grid[neighborIdx].possibilities) {
+              const neighTile = WFC_TILES[neighPossIdx];
+              if (tilesCompatible(tile, neighTile, dir as "north" | "east" | "south" | "west")) {
+                validNeighbors.add(neighPossIdx);
+              }
+            }
+          }
+
+          const newPoss = [...validNeighbors];
+          if (newPoss.length < grid[neighborIdx].possibilities.length) {
+            grid[neighborIdx].possibilities = newPoss.length > 0 ? newPoss : grid[neighborIdx].possibilities;
+            if (!stack.includes(neighborIdx)) {
+              stack.push(neighborIdx);
             }
           }
         }
+      }
+    }
 
-        const newPoss = [...validNeighbors];
-        if (newPoss.length < grid[neighborIdx].possibilities.length) {
-          grid[neighborIdx].possibilities = newPoss.length > 0 ? newPoss : grid[neighborIdx].possibilities;
-          if (!stack.includes(neighborIdx)) {
-            stack.push(neighborIdx);
-          }
+    function collapse() {
+      let minEntropy = Infinity;
+      let minIdx = -1;
+
+      for (let i = 0; i < TILE_COUNT; i++) {
+        if (grid[i].collapsed) continue;
+        const entropy = grid[i].possibilities.length;
+        if (entropy < minEntropy && entropy > 0) {
+          minEntropy = entropy;
+          minIdx = i;
+        } else if (entropy === minEntropy && entropy > 0 && Math.random() > 0.6) {
+          minIdx = i;
         }
       }
-    }
-  }
 
-  function collapse() {
-    let minEntropy = Infinity;
-    let minIdx = -1;
+      if (minIdx === -1) return false;
+
+      const cell = grid[minIdx];
+      const weights = cell.possibilities.map(idx => tileWeightForCell(minIdx, idx));
+      const totalWeight = weights.reduce((a, b) => a + b, 0);
+      let random = Math.random() * (totalWeight || 1);
+      let chosenIdx = 0;
+
+      for (let i = 0; i < weights.length; i++) {
+        random -= weights[i];
+        if (random <= 0) {
+          chosenIdx = i;
+          break;
+        }
+      }
+
+      cell.possibilities = [cell.possibilities[chosenIdx]];
+      cell.collapsed = true;
+
+      propagateConstraints(minIdx);
+      return true;
+    }
+
+    let iterations = 0;
+    while (collapse() && iterations++ < TILE_COUNT * 3) {
+      // Keep collapsing
+    }
 
     for (let i = 0; i < TILE_COUNT; i++) {
-      if (grid[i].collapsed) continue;
-      const entropy = grid[i].possibilities.length;
-      if (entropy < minEntropy && entropy > 0) {
-        minEntropy = entropy;
-        minIdx = i;
-      } else if (entropy === minEntropy && entropy > 0 && Math.random() > 0.6) {
-        minIdx = i;
+      if (!grid[i].collapsed && grid[i].possibilities.length > 0) {
+        const options = grid[i].possibilities;
+        grid[i].possibilities = [options[Math.floor(Math.random() * options.length)]];
+        grid[i].collapsed = true;
+      } else if (grid[i].possibilities.length === 0) {
+        grid[i].possibilities = [0];
+        grid[i].collapsed = true;
       }
     }
 
-    if (minIdx === -1) return false;
-
-    const cell = grid[minIdx];
-    const weights = cell.possibilities.map(idx => tileWeightForCell(minIdx, idx));
-    const totalWeight = weights.reduce((a, b) => a + b, 0);
-    let random = Math.random() * (totalWeight || 1);
-    let chosenIdx = 0;
-
-    for (let i = 0; i < weights.length; i++) {
-      random -= weights[i];
-      if (random <= 0) {
-        chosenIdx = i;
-        break;
-      }
-    }
-
-    cell.possibilities = [cell.possibilities[chosenIdx]];
-    cell.collapsed = true;
-
-    propagateConstraints(minIdx);
-    return true;
-  }
-
-  let iterations = 0;
-  while (collapse() && iterations++ < TILE_COUNT * 3) {
-    // Keep collapsing
-  }
-
-  for (let i = 0; i < TILE_COUNT; i++) {
-    if (!grid[i].collapsed && grid[i].possibilities.length > 0) {
-      const options = grid[i].possibilities;
-      grid[i].possibilities = [options[Math.floor(Math.random() * options.length)]];
-      grid[i].collapsed = true;
-    } else if (grid[i].possibilities.length === 0) {
-      grid[i].possibilities = [0];
-      grid[i].collapsed = true;
+    const roadCount = grid.filter((cell) => WFC_TILES[cell.possibilities[0]].type === 1).length;
+    const roadRatio = roadCount / TILE_COUNT;
+    if (roadRatio <= targetRoadRatio || attempt === maxAttempts - 1) {
+      finalGrid = grid;
+      break;
     }
   }
+
+  if (!finalGrid) return;
 
   const typeCounts: Record<number, number> = {};
   for (let i = 0; i < TILE_COUNT; i++) {
-    const wfcTile = WFC_TILES[grid[i].possibilities[0]];
+    const wfcTile = WFC_TILES[finalGrid[i].possibilities[0]];
     tileType[i] = wfcTile.type;
     typeCounts[wfcTile.type] = (typeCounts[wfcTile.type] || 0) + 1;
 
     if (wfcTile.type === 1) {
-      tileLanes[i] = Math.random() > 0.45 ? 2 : 1;
-      tileSidewalk[i] = Math.random() > 0.75 ? (Math.random() > 0.5 ? 0.05 : 0.08) : 0.0;
+      tileLanes[i] = Math.random() > 0.5 ? 2 : 1;
+      tileSidewalk[i] = Math.random() > 0.7 ? (Math.random() > 0.5 ? 0.05 : 0.08) : 0.0;
       const speedWeighted = Math.random();
       if (speedWeighted < 0.18) {
         tileSpeed[i] = 20;
-      } else if (speedWeighted < 0.4) {
+      } else if (speedWeighted < 0.45) {
         tileSpeed[i] = 30;
-      } else if (speedWeighted < 0.75) {
+      } else if (speedWeighted < 0.8) {
         tileSpeed[i] = 40;
       } else {
         tileSpeed[i] = 50;
@@ -1271,7 +1306,7 @@ function render() {
   resizeCanvas();
   updateCamera();
   gl.enable(gl.DEPTH_TEST);
-  gl.clearColor(0.05, 0.07, 0.1, 1);
+  gl.clearColor(0.07, 0.09, 0.13, 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   gl.useProgram(groundProgram);
   gl.uniform2f(uGrid, GRID_WIDTH, GRID_HEIGHT);
@@ -1813,15 +1848,20 @@ function updateAgents(dt: number) {
     if (agent.progress >= 1) {
       agent.pathIndex = Math.min(agent.pathIndex + 1, agent.path.length - 1);
       agent.progress = 0;
+      const reachedIndex = agent.path[agent.pathIndex];
       if (agent.pathIndex >= agent.path.length - 1) {
         const newEnd = randomTile(Math.random() > 0.6 ? 3 : 2);
         const newEndRoad = newEnd !== null ? findNearestRoad(newEnd) : null;
         if (newEndRoad !== null) {
           agent.destination = newEndRoad;
-          const newPath = aStar(currentIndex, newEndRoad);
+          const newPath = aStar(reachedIndex, newEndRoad);
           if (newPath) {
             agent.path = newPath;
             agent.pathIndex = 0;
+            agent.progress = 0;
+            const snap = tileCenter(reachedIndex);
+            agent.position.x = snap.x;
+            agent.position.z = snap.z;
           }
         }
       }

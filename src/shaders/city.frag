@@ -185,8 +185,13 @@ void main() {
     min(v_tileCoord.x / u_grid.x, 1.0 - v_tileCoord.x / u_grid.x),
     min(v_tileCoord.y / u_grid.y, 1.0 - v_tileCoord.y / u_grid.y)
   );
-  float edgeFade = smoothstep(0.02, 0.2, min(edgeDist.x, edgeDist.y));
-  vec3 hazeBase = mix(vec3(0.08, 0.1, 0.14), vec3(0.13, 0.15, 0.2), fbm(tileUv * 8.0 + u_time * 0.02));
+  float minEdge = min(edgeDist.x, edgeDist.y);
+  float edgeFade = smoothstep(0.08, 0.45, minEdge);
+  vec3 hazeBase = mix(vec3(0.08, 0.1, 0.14), vec3(0.16, 0.18, 0.24), fbm(tileUv * 6.0 + u_time * 0.015));
+  float edgeBlur = clamp(1.0 - smoothstep(0.08, 0.28, minEdge), 0.0, 1.0);
+  float luminance = dot(color, vec3(0.299, 0.587, 0.114));
+  vec3 blurred = mix(vec3(luminance), hazeBase, 0.45);
+  color = mix(blurred, color, 1.0 - edgeBlur * 0.6);
   color = mix(hazeBase, color, edgeFade);
 
   color = clamp(color, 0.0, 1.0);
