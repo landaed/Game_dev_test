@@ -170,8 +170,16 @@ void main() {
     color = mix(color, vec3(0.4, 0.8, 1.0), border * pulse * 0.6);
   }
 
-  float vignette = smoothstep(0.9, 0.2, distance(v_uv, vec2(0.5)));
-  color *= mix(0.9, 1.05, vignette);
+  float vignetteDist = length(v_uv - vec2(0.5));
+  float vignette = smoothstep(0.85, 0.3, vignetteDist);
+  color *= mix(0.75, 1.1, vignette);
+
+  vec3 tonemapped = color / (color + vec3(1.0));
+  tonemapped = pow(tonemapped, vec3(0.95));
+  color = mix(color, tonemapped, 0.3);
+
+  float grain = fbm(v_uv * 500.0 + u_time * 0.5) * 0.015;
+  color += grain;
 
   vec2 edgeDist = vec2(
     min(v_tileCoord.x / u_grid.x, 1.0 - v_tileCoord.x / u_grid.x),
@@ -179,6 +187,8 @@ void main() {
   );
   float edgeFade = smoothstep(0.0, 0.15, min(edgeDist.x, edgeDist.y));
   color = mix(color * 0.5, color, edgeFade);
+
+  color = clamp(color, 0.0, 1.0);
 
   outColor = vec4(color, 1.0);
 }

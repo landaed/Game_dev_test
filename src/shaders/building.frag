@@ -73,7 +73,7 @@ void main() {
 
     float doorHeight = step(v_local.y, 0.15);
     float doorMask = step(0.3, localUV.x) * step(localUV.x, 0.7) *
-                     step(-0.5, localUV.z) * step(localUV.z, 0.5);
+                     step(-0.5, localUV.y) * step(localUV.y, 0.5);
     vec3 doorColor = baseColor * 0.4;
     color = mix(color, doorColor, doorMask * doorHeight);
   }
