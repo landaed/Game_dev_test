@@ -1,5 +1,7 @@
 import vertSource from "./shaders/city.vert?raw";
 import fragSource from "./shaders/city.frag?raw";
+import roadVert from "./shaders/road.vert?raw";
+import roadFrag from "./shaders/road.frag?raw";
 import buildingVert from "./shaders/building.vert?raw";
 import buildingFrag from "./shaders/building.frag?raw";
 import agentVert from "./shaders/agent.vert?raw";
@@ -346,6 +348,9 @@ const tileScooterRestrict = new Float32Array(TILE_COUNT);
 const tileNoiseBarrier = new Float32Array(TILE_COUNT);
 const tileRoadSegment = new Int16Array(TILE_COUNT);
 const roadClass = new Uint8Array(TILE_COUNT);
+const tileCrosswalk = new Float32Array(TILE_COUNT);
+const tileSignal = new Float32Array(TILE_COUNT);
+const tileSignalOffset = new Float32Array(TILE_COUNT);
 
 const traffic = new Float32Array(TILE_COUNT);
 const noise = new Float32Array(TILE_COUNT);
@@ -378,6 +383,9 @@ type RoadSegment = {
   sidewalk: number;
   speed: number;
   isArterial: boolean;
+  hasCrosswalk: boolean;
+  hasSignal: boolean;
+  oneWay: number;
 };
 
 const agents: Agent[] = [];
@@ -386,6 +394,9 @@ let selectedRoadSegment: number | null = null;
 let buildingInstanceCount = 0;
 let buildingInstances = new Float32Array(0);
 let roadSegments: RoadSegment[] = [];
+let roadPolylines: { points: RoadPoint[]; isArterial: boolean }[] = [];
+let roadInstanceCount = 0;
+let roadInstances = new Float32Array(0);
 
 const policyList = [
   {
@@ -646,18 +657,22 @@ function createProgram(vertexSource: string, fragmentSource: string) {
 }
 
 const groundProgram = createProgram(vertSource, fragSource);
+const roadProgram = createProgram(roadVert, roadFrag);
 const buildingProgram = createProgram(buildingVert, buildingFrag);
 const agentProgram = createProgram(agentVert, agentFrag);
 
 const positionBuffer = gl.createBuffer();
+const roadPositionBuffer = gl.createBuffer();
 const cubeBuffer = gl.createBuffer();
 const groundVao = gl.createVertexArray();
+const roadVao = gl.createVertexArray();
 const buildingVao = gl.createVertexArray();
 const agentVao = gl.createVertexArray();
 const buildingInstanceBuffer = gl.createBuffer();
 const agentInstanceBuffer = gl.createBuffer();
+const roadInstanceBuffer = gl.createBuffer();
 
-if (!groundVao || !positionBuffer || !cubeBuffer || !buildingVao || !agentVao || !buildingInstanceBuffer || !agentInstanceBuffer) {
+if (!groundVao || !roadVao || !positionBuffer || !roadPositionBuffer || !cubeBuffer || !buildingVao || !agentVao || !buildingInstanceBuffer || !agentInstanceBuffer || !roadInstanceBuffer) {
   throw new Error("WebGL buffer failed");
 }
 
@@ -668,6 +683,15 @@ const quad = new Float32Array([
   -1, 1,
   1, -1,
   1, 1
+]);
+
+const roadQuad = new Float32Array([
+  -0.5, 0,
+  0.5, 0,
+  -0.5, 1,
+  -0.5, 1,
+  0.5, 0,
+  0.5, 1
 ]);
 
 const cube = new Float32Array([
@@ -689,8 +713,11 @@ const uGrid = gl.getUniformLocation(groundProgram, "u_grid");
 const uTime = gl.getUniformLocation(groundProgram, "u_time");
 const uViewMode = gl.getUniformLocation(groundProgram, "u_viewMode");
 const uViewProj = gl.getUniformLocation(groundProgram, "u_viewProj");
+const uHideRoadTiles = gl.getUniformLocation(groundProgram, "u_hideRoadTiles");
 const uBuildingViewProj = gl.getUniformLocation(buildingProgram, "u_viewProj");
 const uAgentViewProj = gl.getUniformLocation(agentProgram, "u_viewProj");
+const uRoadViewProj = gl.getUniformLocation(roadProgram, "u_viewProj");
+const uRoadTime = gl.getUniformLocation(roadProgram, "u_time");
 
 const tileDataTex = gl.createTexture();
 const metrics0Tex = gl.createTexture();
@@ -832,37 +859,22 @@ function randomRange(min: number, max: number) {
   return min + Math.random() * (max - min);
 }
 
-function rasterizeRoadLine(start: RoadPoint, end: RoadPoint, arterial: boolean) {
-  let x0 = Math.round(start.x);
-  let y0 = Math.round(start.z);
-  const x1 = Math.round(end.x);
-  const y1 = Math.round(end.z);
-  const dx = Math.abs(x1 - x0);
-  const dy = Math.abs(y1 - y0);
-  const sx = x0 < x1 ? 1 : -1;
-  const sy = y0 < y1 ? 1 : -1;
-  let err = dx - dy;
-
-  while (true) {
-    const cx = clamp(x0, 0, GRID_WIDTH - 1);
-    const cy = clamp(y0, 0, GRID_HEIGHT - 1);
-    const idx = indexFor(cx, cy);
-    tileType[idx] = 1;
-    if (arterial) roadClass[idx] = 1;
-    if (x0 === x1 && y0 === y1) break;
-    const e2 = err * 2;
-    if (e2 > -dy) {
-      err -= dy;
-      x0 += sx;
-    }
-    if (e2 < dx) {
-      err += dx;
-      y0 += sy;
-    }
-  }
+function distanceToSegment(point: RoadPoint, start: RoadPoint, end: RoadPoint) {
+  const vx = end.x - start.x;
+  const vz = end.z - start.z;
+  const wx = point.x - start.x;
+  const wz = point.z - start.z;
+  const lenSq = vx * vx + vz * vz;
+  const t = lenSq > 0 ? clamp((wx * vx + wz * vz) / lenSq, 0, 1) : 0;
+  const cx = start.x + vx * t;
+  const cz = start.z + vz * t;
+  const dx = point.x - cx;
+  const dz = point.z - cz;
+  return { dist: Math.hypot(dx, dz), t };
 }
 
 function generateRoadSplines() {
+  roadPolylines = [];
   tileType.fill(0);
   tileLanes.fill(0);
   tileSidewalk.fill(0);
@@ -874,6 +886,9 @@ function generateRoadSplines() {
   tileNoiseBarrier.fill(0);
   tileRoadSegment.fill(-1);
   roadClass.fill(0);
+  tileCrosswalk.fill(0);
+  tileSignal.fill(0);
+  tileSignalOffset.fill(0);
   resetTileIndex();
 
   const horizontalCount = 3;
@@ -884,142 +899,109 @@ function generateRoadSplines() {
   for (let i = 0; i < horizontalCount; i++) {
     const baseY = Math.round(((i + 1) * GRID_HEIGHT) / (horizontalCount + 1));
     const phase = phaseSeed + i * 1.7;
-    let prev: RoadPoint | null = null;
+    const points: RoadPoint[] = [];
     for (let x = 0; x < GRID_WIDTH; x++) {
       const wobble = Math.sin((x / GRID_WIDTH) * Math.PI * 2 + phase) * amplitude;
-      const y = clamp(Math.round(baseY + wobble), 1, GRID_HEIGHT - 2);
-      const point = { x, z: y };
-      if (prev) rasterizeRoadLine(prev, point, true);
-      prev = point;
+      const y = clamp(baseY + wobble, 1, GRID_HEIGHT - 2);
+      points.push({ x, z: y });
     }
+    roadPolylines.push({ points, isArterial: true });
   }
 
   for (let i = 0; i < verticalCount; i++) {
     const baseX = Math.round(((i + 1) * GRID_WIDTH) / (verticalCount + 1));
     const phase = phaseSeed + i * 1.9;
-    let prev: RoadPoint | null = null;
+    const points: RoadPoint[] = [];
     for (let y = 0; y < GRID_HEIGHT; y++) {
       const wobble = Math.sin((y / GRID_HEIGHT) * Math.PI * 2 + phase) * amplitude;
-      const x = clamp(Math.round(baseX + wobble), 1, GRID_WIDTH - 2);
-      const point = { x, z: y };
-      if (prev) rasterizeRoadLine(prev, point, true);
-      prev = point;
+      const x = clamp(baseX + wobble, 1, GRID_WIDTH - 2);
+      points.push({ x, z: y });
     }
+    roadPolylines.push({ points, isArterial: true });
   }
 
   for (let x = 2; x < GRID_WIDTH - 2; x += 6) {
     for (let y = 2; y < GRID_HEIGHT - 2; y += 6) {
       if (Math.random() < 0.5) {
         const endY = clamp(y + (Math.random() > 0.5 ? 4 : -4), 1, GRID_HEIGHT - 2);
-        rasterizeRoadLine({ x, z: y }, { x, z: endY }, false);
+        roadPolylines.push({ points: [{ x, z: y }, { x, z: endY }], isArterial: false });
       }
       if (Math.random() < 0.5) {
         const endX = clamp(x + (Math.random() > 0.5 ? 4 : -4), 1, GRID_WIDTH - 2);
-        rasterizeRoadLine({ x, z: y }, { x: endX, z: y }, false);
+        roadPolylines.push({ points: [{ x, z: y }, { x: endX, z: y }], isArterial: false });
       }
     }
   }
 }
 
-function buildRoadSegments() {
-  roadSegments = [];
-  tileRoadSegment.fill(-1);
-  const visitedEdges = new Set<string>();
-
-  function isRoad(idx: number) {
-    return tileType[idx] === 1;
-  }
-
-  function roadNeighbors(idx: number) {
-    return neighbors(idx).filter((n) => isRoad(n));
-  }
-
-  function roadDegree(idx: number) {
-    return roadNeighbors(idx).length;
-  }
-
-  function edgeKey(a: number, b: number) {
-    return `${a}-${b}`;
-  }
-
-  for (let i = 0; i < TILE_COUNT; i++) {
-    if (!isRoad(i)) continue;
-    for (const neighbor of roadNeighbors(i)) {
-      const key = edgeKey(i, neighbor);
-      if (visitedEdges.has(key)) continue;
-      const tiles: number[] = [i];
-      let prev = i;
-      let current = neighbor;
-      visitedEdges.add(key);
-      visitedEdges.add(edgeKey(neighbor, i));
-      while (true) {
-        tiles.push(current);
-        const deg = roadDegree(current);
-        if (deg !== 2) break;
-        const nextOptions = roadNeighbors(current).filter((n) => n !== prev);
-        if (nextOptions.length === 0) break;
-        const next = nextOptions[0];
-        if (visitedEdges.has(edgeKey(current, next))) break;
-        visitedEdges.add(edgeKey(current, next));
-        visitedEdges.add(edgeKey(next, current));
-        prev = current;
-        current = next;
-        if (current === i) break;
-      }
-      const id = roadSegments.length;
-      const points = tiles.map((tile) => tileCenter(tile));
-      const isArterial = tiles.some((tile) => roadClass[tile] === 1);
-      roadSegments.push({
-        id,
-        tiles,
-        points,
-        lanes: 1,
-        sidewalk: 0.05,
-        speed: 30,
-        isArterial
-      });
-      tiles.forEach((tile) => {
-        tileRoadSegment[tile] = id;
-      });
-    }
-  }
-
-  roadSegments.forEach((segment) => {
-    segment.lanes = segment.isArterial ? (Math.random() > 0.6 ? 3 : 2) : Math.random() > 0.7 ? 2 : 1;
-    segment.sidewalk = segment.isArterial ? randomRange(0.06, 0.14) : randomRange(0.04, 0.12);
-    const baseSpeed = segment.isArterial ? (Math.random() > 0.5 ? 50 : 40) : Math.random() > 0.5 ? 30 : 20;
-    segment.speed = Math.max(20, baseSpeed - Math.round(segment.sidewalk * 60));
-    segment.tiles.forEach((idx) => {
-      tileLanes[idx] = segment.lanes;
-      tileSidewalk[idx] = segment.sidewalk;
-      tileSpeed[idx] = segment.speed;
-      tilePedOnly[idx] = 0;
-      tileScooterRestrict[idx] = 0;
-      tileNoiseBarrier[idx] = 0;
-    });
+function applySplineRoadsToGrid() {
+  roadSegments = roadPolylines.map((spline, idx) => {
+    const isArterial = spline.isArterial;
+    const lanes = isArterial ? (Math.random() > 0.6 ? 3 : 2) : Math.random() > 0.7 ? 2 : 1;
+    const sidewalk = isArterial ? randomRange(0.06, 0.14) : randomRange(0.04, 0.12);
+    const baseSpeed = isArterial ? (Math.random() > 0.5 ? 50 : 40) : Math.random() > 0.5 ? 30 : 20;
+    const speed = Math.max(20, baseSpeed - Math.round(sidewalk * 60));
+    return {
+      id: idx,
+      tiles: [],
+      points: spline.points,
+      lanes,
+      sidewalk,
+      speed,
+      isArterial,
+      hasCrosswalk: false,
+      hasSignal: false,
+      oneWay: 0
+    };
   });
-}
 
-function distanceToRoads() {
-  const dist = new Float32Array(TILE_COUNT);
-  dist.fill(Infinity);
-  const queue: number[] = [];
   for (let i = 0; i < TILE_COUNT; i++) {
-    if (tileType[i] === 1) {
-      dist[i] = 0;
-      queue.push(i);
-    }
-  }
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (current === undefined) break;
-    const currentDist = dist[current];
-    for (const next of neighbors(current)) {
-      if (dist[next] > currentDist + 1) {
-        dist[next] = currentDist + 1;
-        queue.push(next);
+    const center = tileCenter(i);
+    let closest = { dist: Infinity, segmentId: -1 };
+    for (const segment of roadSegments) {
+      const points = segment.points;
+      for (let p = 0; p < points.length - 1; p++) {
+        const { dist } = distanceToSegment(center, points[p], points[p + 1]);
+        if (dist < closest.dist) {
+          closest = { dist, segmentId: segment.id };
+        }
       }
     }
+    if (closest.segmentId >= 0) {
+      const segment = roadSegments[closest.segmentId];
+      const width = 0.35 + segment.lanes * 0.16 + segment.sidewalk * 2;
+      if (closest.dist <= width) {
+        tileType[i] = 1;
+        tileLanes[i] = segment.lanes;
+        tileSidewalk[i] = segment.sidewalk;
+        tileSpeed[i] = segment.speed;
+        tileOneWay[i] = segment.oneWay;
+        tilePedOnly[i] = 0;
+        tileScooterRestrict[i] = 0;
+        tileNoiseBarrier[i] = 0;
+        tileRoadSegment[i] = segment.id;
+        roadClass[i] = segment.isArterial ? 1 : 0;
+        segment.tiles.push(i);
+      }
+    }
+  }
+}
+
+function distanceToSplineSegments() {
+  const dist = new Float32Array(TILE_COUNT);
+  for (let i = 0; i < TILE_COUNT; i++) {
+    const center = tileCenter(i);
+    let closest = Infinity;
+    for (const segment of roadSegments) {
+      const points = segment.points;
+      for (let p = 0; p < points.length - 1; p++) {
+        const { dist: segDist } = distanceToSegment(center, points[p], points[p + 1]);
+        if (segDist < closest) {
+          closest = segDist;
+        }
+      }
+    }
+    dist[i] = closest;
   }
   return dist;
 }
@@ -1053,7 +1035,7 @@ function generateBuildingLayout() {
     return compatibility[a]?.includes(b) ?? true;
   }
 
-  const dist = distanceToRoads();
+  const dist = distanceToSplineSegments();
 
   interface Cell {
     possibilities: number[];
@@ -1175,10 +1157,41 @@ function generateBuildingLayout() {
   }
 }
 
+function updateTrafficControls() {
+  tileCrosswalk.fill(0);
+  tileSignal.fill(0);
+  tileSignalOffset.fill(0);
+  roadSegments.forEach((segment) => {
+    segment.hasCrosswalk = false;
+    segment.hasSignal = false;
+  });
+
+  for (let i = 0; i < TILE_COUNT; i++) {
+    if (tileType[i] !== 1) continue;
+    const mask = Math.round(tileDirMask[i] || 0);
+    const connections = ((mask & 1) > 0 ? 1 : 0) + ((mask & 2) > 0 ? 1 : 0) + ((mask & 4) > 0 ? 1 : 0) + ((mask & 8) > 0 ? 1 : 0);
+    const hasSidewalk = tileSidewalk[i] > 0.02;
+    if (connections >= 3) {
+      tileSignal[i] = 1;
+      tileCrosswalk[i] = hasSidewalk ? 1 : 0;
+    } else if (connections === 2 && hasSidewalk && Math.random() < 0.12) {
+      tileCrosswalk[i] = 1;
+    }
+    const offsetSeed = Math.abs(Math.sin(i * 12.9898) * 43758.5453);
+    tileSignalOffset[i] = offsetSeed - Math.floor(offsetSeed);
+    const segId = tileRoadSegment[i];
+    if (segId >= 0) {
+      if (tileCrosswalk[i] > 0.5) roadSegments[segId].hasCrosswalk = true;
+      if (tileSignal[i] > 0.5) roadSegments[segId].hasSignal = true;
+    }
+  }
+}
+
 function generateCityFromSplines() {
   generateRoadSplines();
-  buildRoadSegments();
+  applySplineRoadsToGrid();
   deriveRoadMaskFromNeighbors();
+  updateTrafficControls();
   generateBuildingLayout();
 }
 
@@ -1520,8 +1533,77 @@ function rebuildRoadSegmentsFromTiles() {
       roadClass[i] = 1;
     }
   }
-  buildRoadSegments();
+  roadSegments = [];
+  tileRoadSegment.fill(-1);
+  const visitedEdges = new Set<string>();
+
+  function isRoad(idx: number) {
+    return tileType[idx] === 1;
+  }
+
+  function roadNeighbors(idx: number) {
+    return neighbors(idx).filter((n) => isRoad(n));
+  }
+
+  function roadDegree(idx: number) {
+    return roadNeighbors(idx).length;
+  }
+
+  function edgeKey(a: number, b: number) {
+    return `${a}-${b}`;
+  }
+
+  for (let i = 0; i < TILE_COUNT; i++) {
+    if (!isRoad(i)) continue;
+    for (const neighbor of roadNeighbors(i)) {
+      const key = edgeKey(i, neighbor);
+      if (visitedEdges.has(key)) continue;
+      const tiles: number[] = [i];
+      let prev = i;
+      let current = neighbor;
+      visitedEdges.add(key);
+      visitedEdges.add(edgeKey(neighbor, i));
+      while (true) {
+        tiles.push(current);
+        const deg = roadDegree(current);
+        if (deg !== 2) break;
+        const nextOptions = roadNeighbors(current).filter((n) => n !== prev);
+        if (nextOptions.length === 0) break;
+        const next = nextOptions[0];
+        if (visitedEdges.has(edgeKey(current, next))) break;
+        visitedEdges.add(edgeKey(current, next));
+        visitedEdges.add(edgeKey(next, current));
+        prev = current;
+        current = next;
+        if (current === i) break;
+      }
+      const id = roadSegments.length;
+      const points = tiles.map((tile) => tileCenter(tile));
+      const isArterial = tiles.some((tile) => roadClass[tile] === 1);
+      const lanes = Math.max(1, tileLanes[i] || 1);
+      const sidewalk = tileSidewalk[i] || 0.04;
+      const speed = tileSpeed[i] || 30;
+      roadSegments.push({
+        id,
+        tiles,
+        points,
+        lanes,
+        sidewalk,
+        speed,
+        isArterial,
+        hasCrosswalk: false,
+        hasSignal: false,
+        oneWay: tileOneWay[i] || 0
+      });
+      tiles.forEach((tile) => {
+        tileRoadSegment[tile] = id;
+      });
+    }
+  }
+
   deriveRoadMaskFromNeighbors();
+  updateTrafficControls();
+  buildRoadRenderInstances();
 }
 
 function assignOneWayDirections() {
@@ -1578,6 +1660,18 @@ function assignOneWayDirections() {
       tileOneWay[idx] = direction;
     });
   }
+
+  roadSegments.forEach((segment) => {
+    segment.oneWay = 0;
+  });
+  for (let i = 0; i < TILE_COUNT; i++) {
+    if (tileType[i] !== 1) continue;
+    const segId = tileRoadSegment[i];
+    if (segId < 0) continue;
+    if (tileOneWay[i] > 0 && roadSegments[segId].oneWay === 0) {
+      roadSegments[segId].oneWay = tileOneWay[i];
+    }
+  }
 }
 
 function placeMallClusters() {
@@ -1610,6 +1704,7 @@ function placeMallClusters() {
 
 generateCityFromSplines();
 assignOneWayDirections();
+buildRoadRenderInstances();
 
 function buildBuildingInstances() {
   const instances: number[] = [];
@@ -1643,6 +1738,41 @@ function buildBuildingInstances() {
   gl.bufferData(gl.ARRAY_BUFFER, buildingInstances, gl.DYNAMIC_DRAW);
 }
 
+function buildRoadRenderInstances() {
+  const instances: number[] = [];
+  roadSegments.forEach((segment) => {
+    const points = segment.points;
+    const width = 0.35 + segment.lanes * 0.16 + segment.sidewalk * 2;
+    const signal = segment.hasSignal ? 1 : 0;
+    const crosswalk = segment.hasCrosswalk ? 1 : 0;
+    const offsetSeed = Math.abs(Math.sin(segment.id * 12.9898) * 43758.5453);
+    const signalOffset = offsetSeed - Math.floor(offsetSeed);
+    for (let i = 0; i < points.length - 1; i++) {
+      const start = points[i];
+      const end = points[i + 1];
+      if (Math.hypot(end.x - start.x, end.z - start.z) < 0.01) continue;
+      instances.push(
+        start.x,
+        start.z,
+        end.x,
+        end.z,
+        width,
+        segment.sidewalk,
+        segment.lanes,
+        segment.oneWay,
+        signal,
+        signalOffset,
+        crosswalk,
+        0
+      );
+    }
+  });
+  roadInstances = new Float32Array(instances);
+  roadInstanceCount = roadInstances.length / 12;
+  gl.bindBuffer(gl.ARRAY_BUFFER, roadInstanceBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, roadInstances, gl.DYNAMIC_DRAW);
+}
+
 function updateTileOrientation() {
   for (let y = 0; y < GRID_HEIGHT; y++) {
     for (let x = 0; x < GRID_WIDTH; x++) {
@@ -1672,6 +1802,23 @@ function buildBuffers() {
   gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
   gl.enableVertexAttribArray(0);
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+
+  gl.bindVertexArray(roadVao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, roadPositionBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, roadQuad, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, roadInstanceBuffer);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 48, 0);
+  gl.vertexAttribDivisor(1, 1);
+  gl.enableVertexAttribArray(2);
+  gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 48, 16);
+  gl.vertexAttribDivisor(2, 1);
+  gl.enableVertexAttribArray(3);
+  gl.vertexAttribPointer(3, 4, gl.FLOAT, false, 48, 32);
+  gl.vertexAttribDivisor(3, 1);
   gl.bindVertexArray(null);
 
   gl.bindVertexArray(buildingVao);
@@ -1716,9 +1863,9 @@ function updateTextures() {
     metrics1Texels[i * 4 + 3] = tilePedOnly[i];
 
     metrics2Texels[i * 4] = tileDirMask[i];
-    metrics2Texels[i * 4 + 1] = 0;
-    metrics2Texels[i * 4 + 2] = 0;
-    metrics2Texels[i * 4 + 3] = 0;
+    metrics2Texels[i * 4 + 1] = tileCrosswalk[i];
+    metrics2Texels[i * 4 + 2] = tileSignal[i];
+    metrics2Texels[i * 4 + 3] = tileSignalOffset[i];
   }
 
   gl.bindTexture(gl.TEXTURE_2D, tileDataTex);
@@ -1785,6 +1932,7 @@ function render() {
   gl.uniform1f(uTime, state.time);
   gl.uniform1i(uViewMode, viewMode);
   gl.uniformMatrix4fv(uViewProj, false, viewProj);
+  gl.uniform1i(uHideRoadTiles, 1);
 
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, tileDataTex);
@@ -1807,6 +1955,16 @@ function render() {
   gl.bindVertexArray(groundVao);
   gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, TILE_COUNT);
   gl.bindVertexArray(null);
+
+  gl.useProgram(roadProgram);
+  gl.uniformMatrix4fv(uRoadViewProj, false, viewProj);
+  gl.uniform1f(uRoadTime, state.time);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.bindVertexArray(roadVao);
+  gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, roadInstanceCount);
+  gl.bindVertexArray(null);
+  gl.disable(gl.BLEND);
 
   gl.useProgram(buildingProgram);
   gl.uniformMatrix4fv(uBuildingViewProj, false, viewProj);
@@ -1988,6 +2146,7 @@ function updateRightPanel() {
           <div class="small">Tiles: ${length}</div>
           <div class="small">Lanes: ${segment.lanes} · Speed ${segment.speed}</div>
           <div class="small">Sidewalk ${(avgSidewalk).toFixed(0)}%</div>
+          <div class="small">Signals: ${segment.hasSignal ? "Yes" : "No"} · Crosswalks: ${segment.hasCrosswalk ? "Yes" : "No"}</div>
         </div>
       `;
       return;
@@ -2103,6 +2262,9 @@ function handleAction(action: string) {
     tiles.forEach((tile) => {
       tileOneWay[tile] = (tileOneWay[tile] + 1) % 5;
     });
+    if (segment) {
+      segment.oneWay = tileOneWay[tiles[0]];
+    }
   }
   if (action === "speed") {
     const current = tileSpeed[tiles[0]] || SPEED_OPTIONS[0];
@@ -2143,6 +2305,7 @@ function handleAction(action: string) {
   audioEngine.playUISuccess();
   updateRightPanel();
   updateLeftPanel();
+  buildRoadRenderInstances();
   showToast("Action applied.");
 }
 
@@ -2262,6 +2425,30 @@ function isMoveAllowed(from: number, to: number) {
   if (dir === 2) return tx > fx;
   if (dir === 3) return ty > fy;
   if (dir === 4) return tx < fx;
+  return true;
+}
+
+function movementDir(from: number, to: number) {
+  const fx = from % GRID_WIDTH;
+  const fy = Math.floor(from / GRID_WIDTH);
+  const tx = to % GRID_WIDTH;
+  const ty = Math.floor(to / GRID_WIDTH);
+  if (ty < fy) return 1;
+  if (tx > fx) return 2;
+  if (ty > fy) return 3;
+  if (tx < fx) return 4;
+  return 0;
+}
+
+function signalAllowsMove(tileIndex: number, dir: number, type: AgentType) {
+  if (type === "pedestrian") return true;
+  if (tileSignal[tileIndex] < 0.5) return true;
+  const phase = (state.time / 6 + tileSignalOffset[tileIndex]) % 1;
+  const northSouthGreen = phase < 0.5;
+  const crossingActive = tileCrosswalk[tileIndex] > 0.5 && phase > 0.45 && phase < 0.65;
+  if (crossingActive) return false;
+  if (dir === 1 || dir === 3) return northSouthGreen;
+  if (dir === 2 || dir === 4) return !northSouthGreen;
   return true;
 }
 
@@ -2387,6 +2574,10 @@ function updateAgents(dt: number) {
     if (agent.path.length === 0) continue;
     const currentIndex = agent.path[agent.pathIndex];
     const nextIndex = agent.path[Math.min(agent.pathIndex + 1, agent.path.length - 1)];
+    const dir = movementDir(currentIndex, nextIndex);
+    if (agent.type !== "pedestrian" && !signalAllowsMove(currentIndex, dir, agent.type)) {
+      continue;
+    }
     const currentPos = tileCenter(currentIndex);
     const nextPos = tileCenter(nextIndex);
     const speed = agentSpeed(agent.type, currentIndex) * dt;
