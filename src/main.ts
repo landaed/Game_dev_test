@@ -47,11 +47,11 @@ const WFC_TILES: WFCTile[] = [
   { type: 1, connections: { north: true, east: false, south: false, west: true }, weight: 5 },
   { type: 1, connections: { north: false, east: true, south: true, west: false }, weight: 5 },
   { type: 1, connections: { north: false, east: false, south: true, west: true }, weight: 5 },
-  // Dead ends
-  { type: 1, connections: { north: true, east: false, south: false, west: false }, weight: 1 },
-  { type: 1, connections: { north: false, east: true, south: false, west: false }, weight: 1 },
-  { type: 1, connections: { north: false, east: false, south: true, west: false }, weight: 1 },
-  { type: 1, connections: { north: false, east: false, south: false, west: true }, weight: 1 },
+  // Dead ends (keep rare)
+  { type: 1, connections: { north: true, east: false, south: false, west: false }, weight: 0.35 },
+  { type: 1, connections: { north: false, east: true, south: false, west: false }, weight: 0.35 },
+  { type: 1, connections: { north: false, east: false, south: true, west: false }, weight: 0.35 },
+  { type: 1, connections: { north: false, east: false, south: false, west: true }, weight: 0.35 },
   // Buildings - no road connections
   { type: 2, connections: { north: false, east: false, south: false, west: false }, weight: 15 },
   { type: 3, connections: { north: false, east: false, south: false, west: false }, weight: 12 },
@@ -193,6 +193,53 @@ class AudioEngine {
     gain.connect(this.uiGain);
     osc.start();
     osc.stop(this.ctx.currentTime + 0.2);
+  }
+
+  playSelectionPing() {
+    if (!this.ctx || !this.uiGain) return;
+    const osc = this.ctx.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(520, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(820, this.ctx.currentTime + 0.1);
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.12, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.12);
+    osc.connect(gain);
+    gain.connect(this.uiGain);
+    osc.start();
+    osc.stop(this.ctx.currentTime + 0.12);
+  }
+
+  playActionThump() {
+    if (!this.ctx || !this.uiGain) return;
+    const buffer = this.createNoise(0.12, "white");
+    if (!buffer) return;
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value = 480;
+    const gain = this.ctx.createGain();
+    gain.gain.value = 0.18;
+    source.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.uiGain);
+    source.start();
+  }
+
+  playPolicyToggle() {
+    if (!this.ctx || !this.uiGain) return;
+    const osc = this.ctx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(260, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(340, this.ctx.currentTime + 0.18);
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.08, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.18);
+    osc.connect(gain);
+    gain.connect(this.uiGain);
+    osc.start();
+    osc.stop(this.ctx.currentTime + 0.18);
   }
 
   updateListener(x: number, y: number, z: number, lookX: number, lookY: number, lookZ: number) {
@@ -790,7 +837,7 @@ function generateMapSimple() {
   console.log('tileIndicesByType counts:', Object.entries(tileIndicesByType).map(([k, v]) => `${k}: ${v.length}`).join(', '));
 }
 
-function generateMapWFC_OLD() {
+function generateMapWFC() {
   resetTileIndex();
 
   interface Cell {
@@ -806,6 +853,16 @@ function generateMapWFC_OLD() {
     };
   }
 
+  const corridorMask = new Uint8Array(TILE_COUNT);
+  for (let y = 0; y < GRID_HEIGHT; y++) {
+    for (let x = 0; x < GRID_WIDTH; x++) {
+      let mask = 0;
+      if (y % 6 === 2) mask |= 1;
+      if (x % 5 === 2) mask |= 2;
+      corridorMask[indexFor(x, y)] = mask;
+    }
+  }
+
   function getNeighborIndices(idx: number) {
     const x = idx % GRID_WIDTH;
     const y = Math.floor(idx / GRID_WIDTH);
@@ -815,6 +872,32 @@ function generateMapWFC_OLD() {
       south: y < GRID_HEIGHT - 1 ? idx + GRID_WIDTH : null,
       west: x > 0 ? idx - 1 : null
     };
+  }
+
+  function tileWeightForCell(idx: number, tileIdx: number) {
+    const tile = WFC_TILES[tileIdx];
+    let weight = tile.weight;
+    const mask = corridorMask[idx];
+    const isRoad = tile.type === 1;
+    if (mask > 0) {
+      if (isRoad) {
+        const wantsHorizontal = (mask & 1) === 1;
+        const wantsVertical = (mask & 2) === 2;
+        const hasHorizontal = tile.connections.east || tile.connections.west;
+        const hasVertical = tile.connections.north || tile.connections.south;
+        if (wantsHorizontal && !hasHorizontal) weight *= 0.1;
+        if (wantsVertical && !hasVertical) weight *= 0.1;
+        if (wantsHorizontal && hasHorizontal) weight *= 2.6;
+        if (wantsVertical && hasVertical) weight *= 2.6;
+      } else {
+        weight *= 0.12;
+      }
+    }
+    const x = idx % GRID_WIDTH;
+    const y = Math.floor(idx / GRID_WIDTH);
+    const edge = x === 0 || y === 0 || x === GRID_WIDTH - 1 || y === GRID_HEIGHT - 1;
+    if (edge && isRoad) weight *= 0.5;
+    return weight;
   }
 
   function propagateConstraints(idx: number) {
@@ -830,14 +913,14 @@ function generateMapWFC_OLD() {
       const currentTile = grid[current];
 
       for (const [dir, neighborIdx] of Object.entries(neighbors)) {
-        if (neighborIdx === null || grid[neighborIdx].collapsed) continue;
+        if (neighborIdx === null) continue;
 
         const validNeighbors = new Set<number>();
         for (const possIdx of currentTile.possibilities) {
           const tile = WFC_TILES[possIdx];
           for (const neighPossIdx of grid[neighborIdx].possibilities) {
             const neighTile = WFC_TILES[neighPossIdx];
-            if (tilesCompatible(tile, neighTile, dir as any)) {
+            if (tilesCompatible(tile, neighTile, dir as "north" | "east" | "south" | "west")) {
               validNeighbors.add(neighPossIdx);
             }
           }
@@ -845,7 +928,7 @@ function generateMapWFC_OLD() {
 
         const newPoss = [...validNeighbors];
         if (newPoss.length < grid[neighborIdx].possibilities.length) {
-          grid[neighborIdx].possibilities = newPoss;
+          grid[neighborIdx].possibilities = newPoss.length > 0 ? newPoss : grid[neighborIdx].possibilities;
           if (!stack.includes(neighborIdx)) {
             stack.push(neighborIdx);
           }
@@ -864,15 +947,17 @@ function generateMapWFC_OLD() {
       if (entropy < minEntropy && entropy > 0) {
         minEntropy = entropy;
         minIdx = i;
+      } else if (entropy === minEntropy && entropy > 0 && Math.random() > 0.6) {
+        minIdx = i;
       }
     }
 
     if (minIdx === -1) return false;
 
     const cell = grid[minIdx];
-    const weights = cell.possibilities.map(idx => WFC_TILES[idx].weight);
+    const weights = cell.possibilities.map(idx => tileWeightForCell(minIdx, idx));
     const totalWeight = weights.reduce((a, b) => a + b, 0);
-    let random = Math.random() * totalWeight;
+    let random = Math.random() * (totalWeight || 1);
     let chosenIdx = 0;
 
     for (let i = 0; i < weights.length; i++) {
@@ -890,61 +975,22 @@ function generateMapWFC_OLD() {
     return true;
   }
 
-  // Seed with connected road grid to ensure connectivity
-  // First collapse horizontal road corridors
-  for (let y = 2; y < GRID_HEIGHT; y += 6) {
-    for (let x = 0; x < GRID_WIDTH; x++) {
-      const idx = indexFor(x, y);
-      // Force horizontal roads (straight E-W or intersections)
-      const horizontalRoads = [7, 1, 2, 4, 5]; // E-W straight, 4-way, T-junctions
-      const chosen = horizontalRoads[Math.floor(Math.random() * horizontalRoads.length)];
-      grid[idx].possibilities = [chosen];
-      grid[idx].collapsed = true;
-    }
-  }
-
-  // Then collapse vertical road corridors
-  for (let x = 2; x < GRID_WIDTH; x += 5) {
-    for (let y = 0; y < GRID_HEIGHT; y++) {
-      const idx = indexFor(x, y);
-      if (grid[idx].collapsed) continue; // Skip already collapsed cells
-      // Force vertical roads (straight N-S or intersections)
-      const verticalRoads = [6, 1, 2, 3, 5]; // N-S straight, 4-way, T-junctions
-      const chosen = verticalRoads[Math.floor(Math.random() * verticalRoads.length)];
-      grid[idx].possibilities = [chosen];
-      grid[idx].collapsed = true;
-    }
-  }
-
-  // Propagate constraints from all seeded roads
-  for (let y = 2; y < GRID_HEIGHT; y += 6) {
-    for (let x = 0; x < GRID_WIDTH; x++) {
-      propagateConstraints(indexFor(x, y));
-    }
-  }
-  for (let x = 2; x < GRID_WIDTH; x += 5) {
-    for (let y = 0; y < GRID_HEIGHT; y++) {
-      propagateConstraints(indexFor(x, y));
-    }
-  }
-
   let iterations = 0;
-  while (collapse() && iterations++ < TILE_COUNT * 2) {
+  while (collapse() && iterations++ < TILE_COUNT * 3) {
     // Keep collapsing
   }
 
-  // Fill in any uncollapsed cells
   for (let i = 0; i < TILE_COUNT; i++) {
     if (!grid[i].collapsed && grid[i].possibilities.length > 0) {
-      grid[i].possibilities = [grid[i].possibilities[Math.floor(Math.random() * grid[i].possibilities.length)]];
+      const options = grid[i].possibilities;
+      grid[i].possibilities = [options[Math.floor(Math.random() * options.length)]];
       grid[i].collapsed = true;
     } else if (grid[i].possibilities.length === 0) {
-      grid[i].possibilities = [0]; // Default to grass
+      grid[i].possibilities = [0];
       grid[i].collapsed = true;
     }
   }
 
-  // Apply results to actual game grid
   const typeCounts: Record<number, number> = {};
   for (let i = 0; i < TILE_COUNT; i++) {
     const wfcTile = WFC_TILES[grid[i].possibilities[0]];
@@ -952,33 +998,20 @@ function generateMapWFC_OLD() {
     typeCounts[wfcTile.type] = (typeCounts[wfcTile.type] || 0) + 1;
 
     if (wfcTile.type === 1) {
-      tileLanes[i] = Math.random() > 0.5 ? 2 : 1;
-      tileSidewalk[i] = Math.random() > 0.85 ? (Math.random() > 0.5 ? 0.05 : 0.08) : 0.0;
+      tileLanes[i] = Math.random() > 0.45 ? 2 : 1;
+      tileSidewalk[i] = Math.random() > 0.75 ? (Math.random() > 0.5 ? 0.05 : 0.08) : 0.0;
       const speedWeighted = Math.random();
-      if (speedWeighted < 0.15) {
+      if (speedWeighted < 0.18) {
         tileSpeed[i] = 20;
-      } else if (speedWeighted < 0.35) {
+      } else if (speedWeighted < 0.4) {
         tileSpeed[i] = 30;
-      } else if (speedWeighted < 0.7) {
+      } else if (speedWeighted < 0.75) {
         tileSpeed[i] = 40;
       } else {
         tileSpeed[i] = 50;
       }
 
-      // Determine one-way based on connections
-      const conn = wfcTile.connections;
-      const connectionCount = [conn.north, conn.east, conn.south, conn.west].filter(Boolean).length;
-      if (connectionCount <= 2 && Math.random() > 0.6) {
-        // One-way streets are more common on straight/corner roads
-        if (conn.north && !conn.south) tileOneWay[i] = 1;
-        else if (conn.east && !conn.west) tileOneWay[i] = 2;
-        else if (conn.south && !conn.north) tileOneWay[i] = 3;
-        else if (conn.west && !conn.east) tileOneWay[i] = 4;
-        else tileOneWay[i] = 0;
-      } else {
-        tileOneWay[i] = 0;
-      }
-
+      tileOneWay[i] = 0;
       tilePedOnly[i] = 0;
       tileScooterRestrict[i] = 0;
       tileNoiseBarrier[i] = 0;
@@ -1007,7 +1040,93 @@ function rebuildTileIndex() {
   }
 }
 
-generateMapSimple();
+function assignOneWayDirections() {
+  tileOneWay.fill(0);
+  const visited = new Set<number>();
+
+  function orientationFor(index: number) {
+    const x = index % GRID_WIDTH;
+    const y = Math.floor(index / GRID_WIDTH);
+    const left = x > 0 && tileType[indexFor(x - 1, y)] === 1;
+    const right = x < GRID_WIDTH - 1 && tileType[indexFor(x + 1, y)] === 1;
+    const up = y > 0 && tileType[indexFor(x, y - 1)] === 1;
+    const down = y < GRID_HEIGHT - 1 && tileType[indexFor(x, y + 1)] === 1;
+    const horizontal = left || right;
+    const vertical = up || down;
+    if (horizontal && !vertical) return "horizontal";
+    if (vertical && !horizontal) return "vertical";
+    return "intersection";
+  }
+
+  function walkSegment(start: number, orientation: "horizontal" | "vertical") {
+    const stack = [start];
+    const segment: number[] = [];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      if (tileType[current] !== 1) continue;
+      if (orientationFor(current) !== orientation) continue;
+      segment.push(current);
+      const x = current % GRID_WIDTH;
+      const y = Math.floor(current / GRID_WIDTH);
+      if (orientation === "horizontal") {
+        if (x > 0) stack.push(indexFor(x - 1, y));
+        if (x < GRID_WIDTH - 1) stack.push(indexFor(x + 1, y));
+      } else {
+        if (y > 0) stack.push(indexFor(x, y - 1));
+        if (y < GRID_HEIGHT - 1) stack.push(indexFor(x, y + 1));
+      }
+    }
+    return segment;
+  }
+
+  for (let i = 0; i < TILE_COUNT; i++) {
+    if (tileType[i] !== 1 || visited.has(i)) continue;
+    const orientation = orientationFor(i);
+    if (orientation === "intersection") continue;
+    const segment = walkSegment(i, orientation);
+    if (segment.length < 3) continue;
+    const shouldBeOneWay = Math.random() > 0.55;
+    if (!shouldBeOneWay) continue;
+    const direction = orientation === "horizontal" ? (Math.random() > 0.5 ? 2 : 4) : Math.random() > 0.5 ? 3 : 1;
+    segment.forEach((idx) => {
+      tileOneWay[idx] = direction;
+    });
+  }
+}
+
+function placeMallClusters() {
+  const clusters: number[] = [];
+  for (let y = 0; y < GRID_HEIGHT - 1; y++) {
+    for (let x = 0; x < GRID_WIDTH - 1; x++) {
+      const idx = indexFor(x, y);
+      const block = [idx, indexFor(x + 1, y), indexFor(x, y + 1), indexFor(x + 1, y + 1)];
+      if (block.some((i) => tileType[i] === 1 || tileType[i] === 0)) continue;
+      const commercialCount = block.filter((i) => tileType[i] === 3 || tileType[i] === 4).length;
+      if (commercialCount < 3) continue;
+      clusters.push(idx);
+    }
+  }
+
+  const desired = Math.min(6, Math.floor(clusters.length * 0.15));
+  for (let i = 0; i < desired; i++) {
+    if (clusters.length === 0) break;
+    const pickIndex = Math.floor(Math.random() * clusters.length);
+    const start = clusters.splice(pickIndex, 1)[0];
+    const x = start % GRID_WIDTH;
+    const y = Math.floor(start / GRID_WIDTH);
+    const block = [start, indexFor(x + 1, y), indexFor(x, y + 1), indexFor(x + 1, y + 1)];
+    block.forEach((idx) => {
+      tileType[idx] = 9;
+    });
+  }
+  rebuildTileIndex();
+}
+
+generateMapWFC();
+placeMallClusters();
+assignOneWayDirections();
 
 function buildBuildingInstances() {
   const instances: number[] = [];
@@ -1016,7 +1135,17 @@ function buildBuildingInstances() {
     const x = i % GRID_WIDTH;
     const y = Math.floor(i / GRID_WIDTH);
     const height =
-      tileType[i] === 2 ? 1.4 : tileType[i] === 3 ? 2.0 : tileType[i] === 4 ? 1.6 : tileType[i] === 7 ? 1.2 : 0.8;
+      tileType[i] === 2
+        ? 1.4
+        : tileType[i] === 3
+          ? 2.0
+          : tileType[i] === 4
+            ? 1.6
+            : tileType[i] === 7
+              ? 1.2
+              : tileType[i] === 9
+                ? 2.4
+                : 0.8;
     instances.push(x + 0.5, y + 0.5, height + (Math.sin(i) * 0.2 + 0.2), tileType[i]);
   }
   buildingInstances = new Float32Array(instances);
@@ -1142,7 +1271,7 @@ function render() {
   resizeCanvas();
   updateCamera();
   gl.enable(gl.DEPTH_TEST);
-  gl.clearColor(0, 0, 0, 1);
+  gl.clearColor(0.05, 0.07, 0.1, 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   gl.useProgram(groundProgram);
   gl.uniform2f(uGrid, GRID_WIDTH, GRID_HEIGHT);
@@ -1445,6 +1574,7 @@ function handleAction(action: string) {
 
   state.cash -= cost;
   state.politicalPoints -= ppCost;
+  audioEngine.playActionThump();
   audioEngine.playUISuccess();
   updateRightPanel();
   updateLeftPanel();
@@ -1465,11 +1595,13 @@ function handlePolicy(id: string) {
     state.cash -= policy.cost;
     policy.active = true;
     state.recentDiscontent += 4;
+    audioEngine.playPolicyToggle();
     audioEngine.playUISuccess();
     showToast(`${policy.name} enacted.`);
   } else {
     policy.active = false;
     state.recentDiscontent += 2;
+    audioEngine.playPolicyToggle();
     audioEngine.playUIClick();
     showToast(`${policy.name} repealed.`);
   }
@@ -1494,6 +1626,7 @@ function saveGame() {
     policies: policyList.map((p) => ({ id: p.id, active: p.active }))
   };
   localStorage.setItem("sidewalk-save", JSON.stringify(save));
+  audioEngine.playUISuccess();
   showToast("Game saved.");
 }
 
@@ -1520,6 +1653,7 @@ function loadGame() {
   });
   rebuildTileIndex();
   buildBuildingInstances();
+  audioEngine.playSelectionPing();
   showToast("Save loaded.");
   updateLeftPanel();
   updateRightPanel();
@@ -1579,7 +1713,7 @@ function aStar(start: number, goal: number) {
         temp = cameFrom.get(temp) as number;
         path.push(temp);
       }
-      return path;
+      return path.reverse();
     }
     for (const next of neighbors(current)) {
       if (!passable(next)) continue;
@@ -1948,6 +2082,7 @@ canvas.addEventListener("click", async (event) => {
     selectedAgent = pickedAgent;
     selectedIndex = null;
     selection.fill(0);
+    audioEngine.playSelectionPing();
     updateRightPanel();
     return;
   }
@@ -1962,6 +2097,7 @@ canvas.addEventListener("click", async (event) => {
     selectedIndex = idx;
     selection.fill(0);
     selection[idx] = 1;
+    audioEngine.playSelectionPing();
     updateRightPanel();
     updateTextures();
   }
