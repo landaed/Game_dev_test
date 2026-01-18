@@ -34,6 +34,14 @@ let simSpeed = 1;
 let quickElections = true;
 let selectedIndex: number | null = null;
 
+let cameraDistance = 28;
+let cameraAngle = Math.PI / 6;
+let cameraPanX = 0;
+let cameraPanZ = 0;
+let isDragging = false;
+let lastMouseX = 0;
+let lastMouseY = 0;
+
 const tileType = new Float32Array(TILE_COUNT);
 const tileLanes = new Float32Array(TILE_COUNT);
 const tileSidewalk = new Float32Array(TILE_COUNT);
@@ -233,6 +241,46 @@ function mat4LookAt(eye: [number, number, number], target: [number, number, numb
   return out;
 }
 
+function mat4Invert(m: Float32Array) {
+  const out = new Float32Array(16);
+  const a00 = m[0], a01 = m[1], a02 = m[2], a03 = m[3];
+  const a10 = m[4], a11 = m[5], a12 = m[6], a13 = m[7];
+  const a20 = m[8], a21 = m[9], a22 = m[10], a23 = m[11];
+  const a30 = m[12], a31 = m[13], a32 = m[14], a33 = m[15];
+  const b00 = a00 * a11 - a01 * a10;
+  const b01 = a00 * a12 - a02 * a10;
+  const b02 = a00 * a13 - a03 * a10;
+  const b03 = a01 * a12 - a02 * a11;
+  const b04 = a01 * a13 - a03 * a11;
+  const b05 = a02 * a13 - a03 * a12;
+  const b06 = a20 * a31 - a21 * a30;
+  const b07 = a20 * a32 - a22 * a30;
+  const b08 = a20 * a33 - a23 * a30;
+  const b09 = a21 * a32 - a22 * a31;
+  const b10 = a21 * a33 - a23 * a31;
+  const b11 = a22 * a33 - a23 * a32;
+  let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+  if (!det) return mat4Identity();
+  det = 1.0 / det;
+  out[0] = (a11 * b11 - a12 * b10 + a13 * b09) * det;
+  out[1] = (a02 * b10 - a01 * b11 - a03 * b09) * det;
+  out[2] = (a31 * b05 - a32 * b04 + a33 * b03) * det;
+  out[3] = (a22 * b04 - a21 * b05 - a23 * b03) * det;
+  out[4] = (a12 * b08 - a10 * b11 - a13 * b07) * det;
+  out[5] = (a00 * b11 - a02 * b08 + a03 * b07) * det;
+  out[6] = (a32 * b02 - a30 * b05 - a33 * b01) * det;
+  out[7] = (a20 * b05 - a22 * b02 + a23 * b01) * det;
+  out[8] = (a10 * b10 - a11 * b08 + a13 * b06) * det;
+  out[9] = (a01 * b08 - a00 * b10 - a03 * b06) * det;
+  out[10] = (a30 * b04 - a31 * b02 + a33 * b00) * det;
+  out[11] = (a21 * b02 - a20 * b04 - a23 * b00) * det;
+  out[12] = (a11 * b07 - a10 * b09 - a12 * b06) * det;
+  out[13] = (a00 * b09 - a01 * b07 + a02 * b06) * det;
+  out[14] = (a31 * b01 - a30 * b03 - a32 * b00) * det;
+  out[15] = (a20 * b03 - a21 * b01 + a22 * b00) * det;
+  return out;
+}
+
 function transformPoint(m: Float32Array, v: [number, number, number, number]) {
   const [x, y, z, w] = v;
   const nx = m[0] * x + m[4] * y + m[8] * z + m[12] * w;
@@ -240,6 +288,24 @@ function transformPoint(m: Float32Array, v: [number, number, number, number]) {
   const nz = m[2] * x + m[6] * y + m[10] * z + m[14] * w;
   const nw = m[3] * x + m[7] * y + m[11] * z + m[15] * w;
   return [nx, ny, nz, nw] as const;
+}
+
+function screenToWorld(screenX: number, screenY: number, invViewProj: Float32Array) {
+  const ndcX = (screenX / canvas.width) * 2 - 1;
+  const ndcY = -((screenY / canvas.height) * 2 - 1);
+  const near = transformPoint(invViewProj, [ndcX, ndcY, -1, 1]);
+  const far = transformPoint(invViewProj, [ndcX, ndcY, 1, 1]);
+  const nearPos = { x: near[0] / near[3], y: near[1] / near[3], z: near[2] / near[3] };
+  const farPos = { x: far[0] / far[3], y: far[1] / far[3], z: far[2] / far[3] };
+  const dirX = farPos.x - nearPos.x;
+  const dirY = farPos.y - nearPos.y;
+  const dirZ = farPos.z - nearPos.z;
+  const t = -nearPos.y / dirY;
+  if (t < 0) return null;
+  return {
+    x: nearPos.x + dirX * t,
+    z: nearPos.z + dirZ * t
+  };
 }
 
 function createShader(type: number, source: string) {
@@ -325,6 +391,7 @@ if (!tileDataTex || !metrics0Tex || !metrics1Tex) {
 }
 
 let viewProj = mat4Identity();
+let invViewProj = mat4Identity();
 
 function setupTexture(tex: WebGLTexture) {
   gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -351,12 +418,16 @@ function updateCamera() {
   const aspect = canvas.width / Math.max(1, canvas.height);
   const fov = Math.PI / 3;
   const projection = mat4Perspective(fov, aspect, 0.1, 200);
-  const centerX = GRID_WIDTH * 0.5;
-  const centerZ = GRID_HEIGHT * 0.5;
-  const eye: [number, number, number] = [centerX, 24, centerZ + 22];
+  const centerX = GRID_WIDTH * 0.5 + cameraPanX;
+  const centerZ = GRID_HEIGHT * 0.5 + cameraPanZ;
+  const eyeX = centerX + Math.sin(cameraAngle) * cameraDistance;
+  const eyeY = cameraDistance * 0.85;
+  const eyeZ = centerZ + Math.cos(cameraAngle) * cameraDistance;
+  const eye: [number, number, number] = [eyeX, eyeY, eyeZ];
   const target: [number, number, number] = [centerX, 0, centerZ];
   const view = mat4LookAt(eye, target, [0, 1, 0]);
   viewProj = mat4Multiply(projection, view);
+  invViewProj = mat4Invert(viewProj);
 }
 
 function projectToScreen(pos: { x: number; y: number; z: number }) {
@@ -1026,10 +1097,10 @@ function spawnAgents() {
 }
 
 function agentSpeed(type: AgentType) {
-  if (type === "pedestrian") return 0.6;
-  if (type === "scooter") return 1.4;
-  if (type === "car") return 1.0;
-  return 0.8;
+  if (type === "pedestrian") return 0.3;
+  if (type === "scooter") return 0.7;
+  if (type === "car") return 0.5;
+  return 0.4;
 }
 
 function updateAgents(dt: number) {
@@ -1251,20 +1322,24 @@ function checkWinLose() {
   }
 }
 
+let frameCounter = 0;
 function tick(dt: number) {
   if (state.lost || state.won) return;
   state.time += dt;
   state.electionTimer -= dt;
   evaluateSimulation(dt);
   updateAgents(dt);
-  updateTextures();
+  frameCounter++;
+  if (frameCounter % 2 === 0) {
+    updateTextures();
+    updateHud();
+    updateRightPanel();
+  }
   updateAgentInstances();
-  updateHud();
-  updateRightPanel();
 }
 
 function loop() {
-  const step = 1 / 2;
+  const step = 1 / 30;
   let accumulator = 0;
   let last = performance.now();
   function frame(now: number) {
@@ -1307,15 +1382,51 @@ canvas.addEventListener("click", (event) => {
     return;
   }
   selectedAgent = null;
-  const tileX = clamp(Math.floor((x / rect.width) * GRID_WIDTH), 0, GRID_WIDTH - 1);
-  const tileY = clamp(Math.floor(((rect.height - y) / rect.height) * GRID_HEIGHT), 0, GRID_HEIGHT - 1);
-  const idx = indexFor(tileX, tileY);
-  selectedIndex = idx;
-  selection.fill(0);
-  selection[idx] = 1;
-  updateRightPanel();
-  updateTextures();
+  const worldPos = screenToWorld(x, y, invViewProj);
+  if (worldPos) {
+    const tileX = clamp(Math.floor(worldPos.x), 0, GRID_WIDTH - 1);
+    const tileY = clamp(Math.floor(worldPos.z), 0, GRID_HEIGHT - 1);
+    const idx = indexFor(tileX, tileY);
+    selectedIndex = idx;
+    selection.fill(0);
+    selection[idx] = 1;
+    updateRightPanel();
+    updateTextures();
+  }
 });
+
+canvas.addEventListener("mousedown", (event) => {
+  if (event.button === 0) {
+    isDragging = true;
+    lastMouseX = event.clientX;
+    lastMouseY = event.clientY;
+  }
+});
+
+canvas.addEventListener("mousemove", (event) => {
+  if (isDragging) {
+    const dx = event.clientX - lastMouseX;
+    const dy = event.clientY - lastMouseY;
+    cameraPanX -= dx * 0.03;
+    cameraPanZ += dy * 0.03;
+    lastMouseX = event.clientX;
+    lastMouseY = event.clientY;
+  }
+});
+
+canvas.addEventListener("mouseup", () => {
+  isDragging = false;
+});
+
+canvas.addEventListener("mouseleave", () => {
+  isDragging = false;
+});
+
+canvas.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  const zoomSpeed = 0.002;
+  cameraDistance = clamp(cameraDistance + event.deltaY * zoomSpeed, 10, 50);
+}, { passive: false });
 
 function initUI() {
   updateHud();
