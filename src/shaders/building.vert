@@ -7,6 +7,7 @@ layout(location = 1) in vec4 a_instance;
 uniform mat4 u_viewProj;
 
 out vec3 v_local;
+out vec3 v_world;
 out float v_type;
 out float v_height;
 
@@ -18,6 +19,7 @@ void main() {
   pos.y *= height;
   pos.xz += base;
   v_local = a_pos;
+  v_world = pos;
   v_type = type;
   v_height = height;
   gl_Position = u_viewProj * vec4(pos, 1.0);

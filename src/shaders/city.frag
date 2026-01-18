@@ -88,17 +88,33 @@ void main() {
     vec3 grassLight = vec3(0.25, 0.42, 0.28);
     color = mix(grassDark, grassLight, grass);
   } else if (tileType < 1.5) {
+    bool hasSidewalk = sidewalk > 0.01;
     float asphalt = fbm(tileUv * 24.0) * 0.2 + 0.2;
-    color = vec3(0.22, 0.24, 0.26) * asphalt;
 
+    if (!hasSidewalk) {
+      color = vec3(0.18, 0.19, 0.20) * asphalt;
+      float dirtPatch = fbm(tileUv * 18.0);
+      color = mix(color, vec3(0.25, 0.20, 0.15), smoothstep(0.6, 0.7, dirtPatch) * 0.3);
+    } else {
+      color = vec3(0.22, 0.24, 0.26) * asphalt;
+    }
+
+    bool isOneWay = oneWay > 0.5;
     float laneCount = max(1.0, lanes);
-    float stripe = smoothstep(0.48, 0.5, abs(fract(uv.x * laneCount) - 0.5));
-    color = mix(color, vec3(0.95, 0.9, 0.7), stripe * 0.7);
+
+    if (isOneWay) {
+      float centerStripe = smoothstep(0.02, 0.01, abs(uv.x - 0.5));
+      color = mix(color, vec3(0.95, 0.85, 0.3), centerStripe * 0.8);
+    } else {
+      float edgeStripeL = smoothstep(0.48, 0.5, abs(fract(uv.x * laneCount) - 0.5));
+      float centerDashed = smoothstep(0.02, 0.01, abs(uv.x - 0.5)) * step(0.5, fract(uv.y * 8.0));
+      color = mix(color, vec3(0.95, 0.9, 0.7), max(edgeStripeL * 0.6, centerDashed * 0.7));
+    }
 
     float crack = smoothstep(0.56, 0.64, fbm(tileUv * 42.0));
-    color -= crack * 0.12;
+    color -= crack * (hasSidewalk ? 0.08 : 0.15);
 
-    if (oneWay > 0.5) {
+    if (isOneWay) {
       vec2 arrowUv = uv;
       if (oneWay > 1.5 && oneWay < 2.5) {
         arrowUv = vec2(uv.y, 1.0 - uv.x);
@@ -107,17 +123,23 @@ void main() {
       } else if (oneWay > 3.5) {
         arrowUv = vec2(1.0 - uv.y, uv.x);
       }
-      float arrow = arrowShape(arrowUv) * 0.5;
+      float arrow = arrowShape(arrowUv) * 0.6;
       color = mix(color, vec3(1.0, 0.96, 0.75), arrow);
     }
 
-    float curb = smoothstep(0.0, 0.05, uv.y) + smoothstep(1.0, 0.95, uv.y);
-    float sidewalkMask = clamp(step(uv.y, sidewalk) + step(1.0 - sidewalk, uv.y), 0.0, 1.0);
-    float slab = step(0.05, uv.x) * step(uv.x, 0.95) * sidewalkMask;
-    float slabs = step(0.48, abs(fract(uv.x * 7.0) - 0.5));
-    vec3 sidewalkColor = vec3(0.48, 0.50, 0.54) + fbm(tileUv * 20.0) * 0.12;
-    color = mix(color, sidewalkColor, slab * 0.8 + curb * 0.5);
-    color = mix(color, sidewalkColor * 1.15, slabs * slab * 0.35);
+    if (hasSidewalk) {
+      float curb = smoothstep(0.0, 0.05, uv.y) + smoothstep(1.0, 0.95, uv.y);
+      float sidewalkMask = clamp(step(uv.y, sidewalk) + step(1.0 - sidewalk, uv.y), 0.0, 1.0);
+      float slab = step(0.05, uv.x) * step(uv.x, 0.95) * sidewalkMask;
+      float slabs = step(0.48, abs(fract(uv.x * 7.0) - 0.5));
+      vec3 sidewalkColor = vec3(0.48, 0.50, 0.54) + fbm(tileUv * 20.0) * 0.12;
+      color = mix(color, sidewalkColor, slab * 0.8 + curb * 0.5);
+      color = mix(color, sidewalkColor * 1.15, slabs * slab * 0.35);
+    } else {
+      float edgeDirt = smoothstep(0.0, 0.15, uv.y) + smoothstep(1.0, 0.85, uv.y);
+      vec3 dirtColor = vec3(0.22, 0.18, 0.14);
+      color = mix(color, dirtColor, edgeDirt * 0.4);
+    }
   } else {
     float seed = hash(v_tileCoord);
     vec3 base = mix(vec3(0.28, 0.32, 0.42), vec3(0.45, 0.40, 0.50), seed);
@@ -150,6 +172,13 @@ void main() {
 
   float vignette = smoothstep(0.9, 0.2, distance(v_uv, vec2(0.5)));
   color *= mix(0.9, 1.05, vignette);
+
+  vec2 edgeDist = vec2(
+    min(v_tileCoord.x / u_grid.x, 1.0 - v_tileCoord.x / u_grid.x),
+    min(v_tileCoord.y / u_grid.y, 1.0 - v_tileCoord.y / u_grid.y)
+  );
+  float edgeFade = smoothstep(0.0, 0.15, min(edgeDist.x, edgeDist.y));
+  color = mix(color * 0.5, color, edgeFade);
 
   outColor = vec4(color, 1.0);
 }

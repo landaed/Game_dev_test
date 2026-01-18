@@ -36,9 +36,11 @@ let selectedIndex: number | null = null;
 
 let cameraDistance = 28;
 let cameraAngle = Math.PI / 6;
+let cameraTilt = Math.PI / 4;
 let cameraPanX = 0;
 let cameraPanZ = 0;
-let isDragging = false;
+let isDraggingPan = false;
+let isDraggingRotate = false;
 let lastMouseX = 0;
 let lastMouseY = 0;
 
@@ -418,11 +420,14 @@ function updateCamera() {
   const aspect = canvas.width / Math.max(1, canvas.height);
   const fov = Math.PI / 3;
   const projection = mat4Perspective(fov, aspect, 0.1, 200);
-  const centerX = GRID_WIDTH * 0.5 + cameraPanX;
-  const centerZ = GRID_HEIGHT * 0.5 + cameraPanZ;
-  const eyeX = centerX + Math.sin(cameraAngle) * cameraDistance;
-  const eyeY = cameraDistance * 0.85;
-  const eyeZ = centerZ + Math.cos(cameraAngle) * cameraDistance;
+  const centerX = clamp(GRID_WIDTH * 0.5 + cameraPanX, 5, GRID_WIDTH - 5);
+  const centerZ = clamp(GRID_HEIGHT * 0.5 + cameraPanZ, 5, GRID_HEIGHT - 5);
+  cameraPanX = centerX - GRID_WIDTH * 0.5;
+  cameraPanZ = centerZ - GRID_HEIGHT * 0.5;
+  const horizontalDist = cameraDistance * Math.cos(cameraTilt);
+  const eyeX = centerX + Math.sin(cameraAngle) * horizontalDist;
+  const eyeY = cameraDistance * Math.sin(cameraTilt);
+  const eyeZ = centerZ + Math.cos(cameraAngle) * horizontalDist;
   const eye: [number, number, number] = [eyeX, eyeY, eyeZ];
   const target: [number, number, number] = [centerX, 0, centerZ];
   const view = mat4LookAt(eye, target, [0, 1, 0]);
@@ -469,19 +474,28 @@ function generateMap() {
   for (let y = 0; y < GRID_HEIGHT; y++) {
     for (let x = 0; x < GRID_WIDTH; x++) {
       const idx = indexFor(x, y);
-      const isRoad = x % 5 === 0 || y % 6 === 0;
+      const isRoad = x % 5 === 0 || y % 6 === 0 || (Math.random() > 0.92);
       if (isRoad) {
         tileType[idx] = 1;
-        tileLanes[idx] = Math.random() > 0.7 ? 2 : 1;
-        tileSidewalk[idx] = Math.random() > 0.55 ? 0.05 : 0.0;
-        tileSpeed[idx] = SPEED_OPTIONS[Math.floor(Math.random() * SPEED_OPTIONS.length)];
+        tileLanes[idx] = Math.random() > 0.5 ? 2 : 1;
+        tileSidewalk[idx] = Math.random() > 0.85 ? (Math.random() > 0.5 ? 0.05 : 0.08) : 0.0;
+        const speedWeighted = Math.random();
+        if (speedWeighted < 0.15) {
+          tileSpeed[idx] = 20;
+        } else if (speedWeighted < 0.35) {
+          tileSpeed[idx] = 30;
+        } else if (speedWeighted < 0.7) {
+          tileSpeed[idx] = 40;
+        } else {
+          tileSpeed[idx] = 50;
+        }
       } else {
         const r = Math.random();
         let type: TileType = 2;
-        if (r > 0.8) type = 3;
-        if (r > 0.9) type = 4;
-        if (r > 0.96) type = 5;
-        if (r > 0.98) type = 6;
+        if (r > 0.75) type = 3;
+        if (r > 0.88) type = 4;
+        if (r > 0.95) type = 5;
+        if (r > 0.975) type = 6;
         if (r > 0.985) type = 7;
         tileType[idx] = type;
         tileLanes[idx] = 0;
@@ -489,7 +503,7 @@ function generateMap() {
         tileSpeed[idx] = 0;
         tileIndicesByType[type]?.push(idx);
       }
-      tileOneWay[idx] = Math.random() > 0.85 ? Math.ceil(Math.random() * 4) : 0;
+      tileOneWay[idx] = Math.random() > 0.55 ? Math.ceil(Math.random() * 4) : 0;
       tilePedOnly[idx] = 0;
       tileScooterRestrict[idx] = 0;
       tileNoiseBarrier[idx] = 0;
@@ -1074,8 +1088,19 @@ function runTrips(count: number) {
 function spawnAgents() {
   agents.length = 0;
   const types: AgentType[] = ["pedestrian", "scooter", "car", "truck"];
-  for (let i = 0; i < 80; i++) {
-    const type = types[i % types.length];
+  const typeWeights = [0.2, 0.4, 0.3, 0.1];
+  for (let i = 0; i < 150; i++) {
+    const rand = Math.random();
+    let type: AgentType = "car";
+    if (rand < typeWeights[0]) {
+      type = "pedestrian";
+    } else if (rand < typeWeights[0] + typeWeights[1]) {
+      type = "scooter";
+    } else if (rand < typeWeights[0] + typeWeights[1] + typeWeights[2]) {
+      type = "car";
+    } else {
+      type = "truck";
+    }
     const start = randomTile(2) ?? randomTile(3);
     const end = randomTile(3) ?? randomTile(2);
     if (start === null || end === null) continue;
@@ -1203,8 +1228,8 @@ function evaluateSimulation(dt: number) {
     policyEffects.sidewalkBonus += 0.05;
   }
 
-  const tripCount = Math.floor(state.population / 1200) * policyEffects.trafficFactor * policyEffects.transitFactor;
-  runTrips(Math.max(20, tripCount));
+  const tripCount = Math.floor(state.population / 800) * policyEffects.trafficFactor * policyEffects.transitFactor;
+  runTrips(Math.max(40, tripCount));
 
   let totalIncome = 0;
   let totalNoise = 0;
@@ -1395,31 +1420,48 @@ canvas.addEventListener("click", (event) => {
   }
 });
 
+canvas.addEventListener("contextmenu", (event) => {
+  event.preventDefault();
+});
+
 canvas.addEventListener("mousedown", (event) => {
   if (event.button === 0) {
-    isDragging = true;
+    isDraggingPan = true;
+    lastMouseX = event.clientX;
+    lastMouseY = event.clientY;
+  } else if (event.button === 2) {
+    isDraggingRotate = true;
     lastMouseX = event.clientX;
     lastMouseY = event.clientY;
   }
 });
 
 canvas.addEventListener("mousemove", (event) => {
-  if (isDragging) {
+  if (isDraggingPan) {
     const dx = event.clientX - lastMouseX;
     const dy = event.clientY - lastMouseY;
     cameraPanX -= dx * 0.03;
     cameraPanZ += dy * 0.03;
     lastMouseX = event.clientX;
     lastMouseY = event.clientY;
+  } else if (isDraggingRotate) {
+    const dx = event.clientX - lastMouseX;
+    const dy = event.clientY - lastMouseY;
+    cameraAngle -= dx * 0.01;
+    cameraTilt = clamp(cameraTilt + dy * 0.005, Math.PI / 8, Math.PI / 2.2);
+    lastMouseX = event.clientX;
+    lastMouseY = event.clientY;
   }
 });
 
 canvas.addEventListener("mouseup", () => {
-  isDragging = false;
+  isDraggingPan = false;
+  isDraggingRotate = false;
 });
 
 canvas.addEventListener("mouseleave", () => {
-  isDragging = false;
+  isDraggingPan = false;
+  isDraggingRotate = false;
 });
 
 canvas.addEventListener("wheel", (event) => {

@@ -11,7 +11,8 @@ npm run dev
 ## Controls
 - **Click** a tile to select it.
 - **Click** pedestrians/scooters/cars/trucks to inspect their routes.
-- **Drag** with mouse to pan the camera around the city.
+- **Left-click + Drag** to pan the camera around the city.
+- **Right-click + Drag** to rotate the camera (orbital rotation).
 - **Scroll** with mouse wheel to zoom in and out.
 - **Left panel**: apply road actions or enact/repeal policies.
 - **Bottom bar**: switch heatmap view modes and simulation speed.
