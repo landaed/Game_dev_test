@@ -41,8 +41,18 @@ void main() {
     normal = vec3(0.0, 0.0, sign(v_local.z));
   }
 
-  float faceDot = dot(normal, normalize(vec3(0.5, 0.8, 0.3)));
-  float lighting = 0.7 + faceDot * 0.3;
+  // Enhanced directional lighting with shadows
+  vec3 lightDir = normalize(vec3(0.5, 0.8, 0.3));
+  float faceDot = max(0.0, dot(normal, lightDir));
+
+  // Ambient + diffuse lighting
+  float ambient = 0.4;
+  float diffuse = faceDot * 0.6;
+  float lighting = ambient + diffuse;
+
+  // Simple soft shadow based on building height and position
+  float shadowFactor = 1.0 - smoothstep(0.0, 0.3, v_local.y) * 0.15;
+  lighting *= shadowFactor;
 
   vec3 color = baseColor * lighting;
 

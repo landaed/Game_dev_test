@@ -396,6 +396,13 @@ type RoadSegment = {
   roadWidth: RoadWidth;
 };
 
+type Intersection = {
+  position: { x: number; z: number };
+  connectedSegments: number[];
+  size: number;
+  hasSignal: boolean;
+};
+
 const agents: Agent[] = [];
 let selectedAgent: Agent | null = null;
 let selectedRoadSegment: number | null = null;
@@ -405,6 +412,7 @@ let roadSegments: RoadSegment[] = [];
 let roadPolylines: { points: RoadPoint[]; isArterial: boolean; roadWidth: RoadWidth }[] = [];
 let roadInstanceCount = 0;
 let roadInstances = new Float32Array(0);
+let intersections: Intersection[] = [];
 
 const policyList = [
   {
@@ -1036,6 +1044,67 @@ function applySplineRoadsToGrid() {
   }
 }
 
+function detectIntersections() {
+  intersections = [];
+  const intersectionThreshold = 1.5;
+
+  // Check all pairs of road segments for intersections
+  for (let i = 0; i < roadSegments.length; i++) {
+    for (let j = i + 1; j < roadSegments.length; j++) {
+      const seg1 = roadSegments[i];
+      const seg2 = roadSegments[j];
+
+      // Check if segments' point clouds are close enough
+      for (const p1 of seg1.points) {
+        for (const p2 of seg2.points) {
+          const dist = Math.hypot(p1.x - p2.x, p1.z - p2.z);
+          if (dist < intersectionThreshold) {
+            // Found an intersection point
+            const existingIntersection = intersections.find(
+              (int) => Math.hypot(int.position.x - p1.x, int.position.z - p1.z) < intersectionThreshold
+            );
+
+            if (existingIntersection) {
+              // Add to existing intersection
+              if (!existingIntersection.connectedSegments.includes(i)) {
+                existingIntersection.connectedSegments.push(i);
+              }
+              if (!existingIntersection.connectedSegments.includes(j)) {
+                existingIntersection.connectedSegments.push(j);
+              }
+            } else {
+              // Create new intersection
+              const avgX = (p1.x + p2.x) / 2;
+              const avgZ = (p1.z + p2.z) / 2;
+              const maxWidth = Math.max(
+                0.35 + seg1.lanes * 0.16 + seg1.sidewalk * 2,
+                0.35 + seg2.lanes * 0.16 + seg2.sidewalk * 2
+              );
+              intersections.push({
+                position: { x: avgX, z: avgZ },
+                connectedSegments: [i, j],
+                size: maxWidth * 1.2,
+                hasSignal: seg1.isArterial || seg2.isArterial
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Mark segments that have intersections
+  for (const intersection of intersections) {
+    for (const segId of intersection.connectedSegments) {
+      const segment = roadSegments[segId];
+      if (intersection.connectedSegments.length >= 3) {
+        segment.hasSignal = intersection.hasSignal;
+        segment.hasCrosswalk = true;
+      }
+    }
+  }
+}
+
 function distanceToSplineSegments() {
   const dist = new Float32Array(TILE_COUNT);
   for (let i = 0; i < TILE_COUNT; i++) {
@@ -1239,6 +1308,7 @@ function updateTrafficControls() {
 function generateCityFromSplines() {
   generateRoadSplines();
   applySplineRoadsToGrid();
+  detectIntersections();
   deriveRoadMaskFromNeighbors();
   updateTrafficControls();
   generateBuildingLayout();
@@ -1787,8 +1857,114 @@ function buildBuildingInstances() {
   gl.bufferData(gl.ARRAY_BUFFER, buildingInstances, gl.DYNAMIC_DRAW);
 }
 
+function addBuildingAccessSplines() {
+  // Add thin aesthetic splines from buildings to adjacent roads
+  for (let i = 0; i < TILE_COUNT; i++) {
+    const type = tileType[i];
+    if (type <= 1 || type === 5) continue; // Skip non-buildings and parks
+
+    const buildingPos = tileCenter(i);
+    const bx = i % GRID_WIDTH;
+    const bz = Math.floor(i / GRID_WIDTH);
+
+    // Check adjacent tiles for roads
+    const directions = [
+      { dx: 1, dz: 0 },
+      { dx: -1, dz: 0 },
+      { dx: 0, dz: 1 },
+      { dx: 0, dz: -1 }
+    ];
+
+    for (const dir of directions) {
+      const nx = bx + dir.dx;
+      const nz = bz + dir.dz;
+      if (nx < 0 || nx >= GRID_WIDTH || nz < 0 || nz >= GRID_HEIGHT) continue;
+
+      const neighborIdx = nz * GRID_WIDTH + nx;
+      if (tileType[neighborIdx] === 1) {
+        // Adjacent to a road, create a thin access spline
+        const roadPos = tileCenter(neighborIdx);
+        const midX = (buildingPos.x + roadPos.x) / 2;
+        const midZ = (buildingPos.z + roadPos.z) / 2;
+
+        // Create a short curved path
+        const points: RoadPoint[] = [
+          { x: buildingPos.x + dir.dx * 0.2, z: buildingPos.z + dir.dz * 0.2 },
+          { x: midX, z: midZ },
+          { x: roadPos.x - dir.dx * 0.1, z: roadPos.z - dir.dz * 0.1 }
+        ];
+
+        roadPolylines.push({
+          points,
+          isArterial: false,
+          roadWidth: "narrow"
+        });
+      }
+    }
+  }
+
+  // Rebuild road segments to include the new access splines
+  const newAccessSegments = roadPolylines.slice(roadSegments.length).map((spline, idx) => {
+    const id = roadSegments.length + idx;
+    return {
+      id,
+      tiles: [],
+      points: spline.points,
+      lanes: 1,
+      sidewalk: 0.15,
+      speed: 10,
+      isArterial: false,
+      hasCrosswalk: false,
+      hasSignal: false,
+      oneWay: 0,
+      roadWidth: "narrow" as RoadWidth
+    };
+  });
+
+  roadSegments.push(...newAccessSegments);
+}
+
 function buildRoadRenderInstances() {
   const instances: number[] = [];
+
+  // First, render intersection boxes
+  for (const intersection of intersections) {
+    const size = intersection.size;
+    const halfSize = size / 2;
+    const pos = intersection.position;
+    const signal = intersection.hasSignal ? 1 : 0;
+    const offsetSeed = Math.abs(Math.sin(pos.x * 12.9898 + pos.z * 78.233) * 43758.5453);
+    const signalOffset = offsetSeed - Math.floor(offsetSeed);
+
+    // Create 4 edges of the intersection box
+    const corners = [
+      { x: pos.x - halfSize, z: pos.z - halfSize },
+      { x: pos.x + halfSize, z: pos.z - halfSize },
+      { x: pos.x + halfSize, z: pos.z + halfSize },
+      { x: pos.x - halfSize, z: pos.z + halfSize }
+    ];
+
+    for (let i = 0; i < 4; i++) {
+      const start = corners[i];
+      const end = corners[(i + 1) % 4];
+      instances.push(
+        start.x,
+        start.z,
+        end.x,
+        end.z,
+        size,
+        0.05,
+        2,
+        0,
+        signal,
+        signalOffset,
+        1,
+        0.01
+      );
+    }
+  }
+
+  // Render road segments, trimming near intersections
   roadSegments.forEach((segment) => {
     const points = segment.points;
     const laneCount = segment.lanes >= 2 ? 2 : 1;
@@ -1797,10 +1973,43 @@ function buildRoadRenderInstances() {
     const crosswalk = segment.hasCrosswalk ? 1 : 0;
     const offsetSeed = Math.abs(Math.sin(segment.id * 12.9898) * 43758.5453);
     const signalOffset = offsetSeed - Math.floor(offsetSeed);
+
     for (let i = 0; i < points.length - 1; i++) {
-      const start = points[i];
-      const end = points[i + 1];
+      let start = points[i];
+      let end = points[i + 1];
       if (Math.hypot(end.x - start.x, end.z - start.z) < 0.01) continue;
+
+      // Check if this segment is near an intersection and trim if necessary
+      let shouldSkip = false;
+      for (const intersection of intersections) {
+        if (intersection.connectedSegments.includes(segment.id)) {
+          const distToStart = Math.hypot(start.x - intersection.position.x, start.z - intersection.position.z);
+          const distToEnd = Math.hypot(end.x - intersection.position.x, end.z - intersection.position.z);
+          const threshold = intersection.size * 0.6;
+
+          if (distToStart < threshold && distToEnd < threshold) {
+            shouldSkip = true;
+            break;
+          }
+
+          // Trim segment ends near intersection
+          if (distToStart < threshold) {
+            const dir = { x: end.x - start.x, z: end.z - start.z };
+            const len = Math.hypot(dir.x, dir.z);
+            const t = threshold / len;
+            start = { x: start.x + dir.x * t, z: start.z + dir.z * t };
+          }
+          if (distToEnd < threshold) {
+            const dir = { x: start.x - end.x, z: start.z - end.z };
+            const len = Math.hypot(dir.x, dir.z);
+            const t = threshold / len;
+            end = { x: end.x + dir.x * t, z: end.z + dir.z * t };
+          }
+        }
+      }
+
+      if (shouldSkip) continue;
+
       const elevation = segment.isArterial ? 0.008 : 0.004;
       instances.push(
         start.x,
@@ -1818,6 +2027,7 @@ function buildRoadRenderInstances() {
       );
     }
   });
+
   roadInstances = new Float32Array(instances);
   roadInstanceCount = roadInstances.length / 12;
   gl.bindBuffer(gl.ARRAY_BUFFER, roadInstanceBuffer);
@@ -1845,6 +2055,8 @@ function updateTileOrientation() {
 
 updateTileOrientation();
 buildBuildingInstances();
+addBuildingAccessSplines();
+buildRoadRenderInstances();
 spawnAgents();
 
 function buildBuffers() {
