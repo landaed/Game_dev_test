@@ -42,11 +42,16 @@ void main() {
   float sidewalkMask = step(v_local.x, sidewalkFrac) + step(1.0 - sidewalkFrac, v_local.x);
   color = mix(color, sidewalkColor, clamp(sidewalkMask, 0.0, 1.0));
 
-  float laneScale = lanes;
-  float lanePos = fract(roadX * laneScale);
-  float laneStripe = smoothstep(0.47, 0.5, abs(lanePos - 0.5));
-  float centerDashed = smoothstep(0.02, 0.01, abs(roadX - 0.5)) * step(0.5, fract(v_local.y * 9.0));
-  color = mix(color, vec3(0.95, 0.9, 0.7), max(laneStripe * 0.35, centerDashed * 0.8));
+  // Fixed lane markings: only show center line for 2-lane roads
+  float laneStripe = 0.0;
+  if (lanes >= 1.9) {
+    // 2-lane road: show single center line (dashed)
+    float centerDashed = smoothstep(0.03, 0.01, abs(roadX - 0.5)) * step(0.5, fract(v_local.y * 9.0));
+    laneStripe = centerDashed;
+  }
+  // 1-lane roads have no center markings
+
+  color = mix(color, vec3(0.95, 0.9, 0.7), laneStripe * 0.8);
 
   float arrow = arrowShape(vec2(roadX, v_local.y));
   if (oneWay > 0.5) {
@@ -55,10 +60,12 @@ void main() {
     color = mix(color, vec3(0.75, 0.9, 1.0), arrow * 0.2);
   }
 
+  // Enhanced crosswalk with better visibility
   if (hasCrosswalk > 0.5) {
     float atEnd = smoothstep(0.0, 0.08, v_local.y) + smoothstep(1.0, 0.92, v_local.y);
-    float zebra = step(0.5, fract(roadX * 10.0));
-    color = mix(color, vec3(0.95, 0.95, 0.95), zebra * atEnd * 0.7);
+    float zebra = step(0.5, fract(roadX * 12.0));
+    // Make crosswalk brighter and more visible
+    color = mix(color, vec3(0.98, 0.98, 0.98), zebra * atEnd * 0.85);
   }
 
   if (hasSignal > 0.5) {
@@ -69,6 +76,12 @@ void main() {
     vec3 lightColor = mix(vec3(0.9, 0.2, 0.2), vec3(0.2, 0.9, 0.3), green);
     color = mix(color, lightColor, light * 0.9);
   }
+
+  // Add directional lighting (sun from top-right)
+  vec3 lightDir = normalize(vec3(0.5, 0.8, 0.3));
+  vec3 normal = vec3(0.0, 1.0, 0.0); // Road is flat
+  float lighting = 0.75 + max(0.0, dot(normal, lightDir)) * 0.25;
+  color *= lighting;
 
   outColor = vec4(color, 0.95);
 }
