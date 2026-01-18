@@ -736,6 +736,7 @@ const uTime = gl.getUniformLocation(groundProgram, "u_time");
 const uViewMode = gl.getUniformLocation(groundProgram, "u_viewMode");
 const uViewProj = gl.getUniformLocation(groundProgram, "u_viewProj");
 const uHideRoadTiles = gl.getUniformLocation(groundProgram, "u_hideRoadTiles");
+const uGroundLightDir = gl.getUniformLocation(groundProgram, "u_lightDir");
 const uBuildingViewProj = gl.getUniformLocation(buildingProgram, "u_viewProj");
 const uBuildingLightDir = gl.getUniformLocation(buildingProgram, "u_lightDir");
 const uAgentViewProj = gl.getUniformLocation(agentProgram, "u_viewProj");
@@ -2106,23 +2107,29 @@ function buildRoadRenderInstances() {
     const points = segment.points;
     const laneCount = segment.lanes >= 2 ? 2 : 1;
     const width = 0.35 + laneCount * 0.16 + segment.sidewalk * 2;
-    const signal = segment.hasSignal ? 1 : 0;
-    const crosswalk = segment.hasCrosswalk ? 1 : 0;
-    const offsetSeed = Math.abs(Math.sin(segment.id * 12.9898) * 43758.5453);
-    const signalOffset = offsetSeed - Math.floor(offsetSeed);
 
     for (let i = 0; i < points.length - 1; i++) {
       let start = points[i];
       let end = points[i + 1];
       if (Math.hypot(end.x - start.x, end.z - start.z) < 0.01) continue;
 
-      // Check if this segment is near an intersection and trim if necessary
+      // Check if this specific sub-segment is near an intersection
       let shouldSkip = false;
+      let atIntersection = false;
+      let intersectionOffset = 0;
+
       for (const intersection of intersections) {
         if (intersection.connectedSegments.includes(segment.id)) {
           const distToStart = Math.hypot(start.x - intersection.position.x, start.z - intersection.position.z);
           const distToEnd = Math.hypot(end.x - intersection.position.x, end.z - intersection.position.z);
           const threshold = intersection.size * 0.6;
+
+          // Check if this sub-segment is AT the intersection
+          if (distToStart < threshold * 0.5 || distToEnd < threshold * 0.5) {
+            atIntersection = true;
+            const offsetSeed = Math.abs(Math.sin(intersection.position.x * 12.9898 + intersection.position.z * 78.233) * 43758.5453);
+            intersectionOffset = offsetSeed - Math.floor(offsetSeed);
+          }
 
           if (distToStart < threshold && distToEnd < threshold) {
             shouldSkip = true;
@@ -2147,6 +2154,10 @@ function buildRoadRenderInstances() {
 
       if (shouldSkip) continue;
 
+      // Only set signal/crosswalk flags if this sub-segment is actually at an intersection
+      const signal = atIntersection && segment.hasSignal ? 1 : 0;
+      const crosswalk = atIntersection && segment.hasCrosswalk ? 1 : 0;
+
       const elevation = segment.isArterial ? 0.008 : 0.004;
       instances.push(
         start.x,
@@ -2158,7 +2169,7 @@ function buildRoadRenderInstances() {
         laneCount,
         segment.oneWay,
         signal,
-        signalOffset,
+        atIntersection ? intersectionOffset : 0,
         crosswalk,
         elevation
       );
@@ -2414,6 +2425,7 @@ function render() {
   gl.uniform1i(uViewMode, viewMode);
   gl.uniformMatrix4fv(uViewProj, false, viewProj);
   gl.uniform1i(uHideRoadTiles, 1);
+  gl.uniform3fv(uGroundLightDir, lightDir);
 
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, tileDataTex);
@@ -2996,14 +3008,13 @@ function applySplineLaneOffset(position: { x: number; z: number }, segmentId: nu
   let offset = 0;
 
   if (agent.type === "pedestrian") {
-    const curb = 0.32 + sidewalkWidth * 2;
-    offset = curb * (agent.laneBias >= 0 ? 1 : -1);
+    // Reduced offset to keep pedestrians on road
+    offset = 0.25 * (agent.laneBias >= 0 ? 1 : -1);
   } else if (agent.type === "scooter") {
-    const scooterOffset = 0.18 + sidewalkWidth;
-    offset = scooterOffset * (agent.splineDirection >= 0 ? -1 : 1);
+    offset = 0.15 * (agent.laneBias >= 0 ? 1 : -1);
   } else {
     if (lanes === 2) {
-      offset = 0.12 * (agent.splineDirection >= 0 ? -1 : 1);
+      offset = 0.10 * (agent.laneBias >= 0 ? 1 : -1);
     } else {
       offset = 0;
     }
@@ -3025,13 +3036,13 @@ function applyLaneOffset(position: { x: number; z: number }, from: number, to: n
   const sidewalkWidth = tileSidewalk[from] || 0;
   let offset = 0;
   if (agent.type === "pedestrian") {
-    const curb = 0.32 + sidewalkWidth * 2;
-    offset = curb * (agent.laneBias >= 0 ? 1 : -1);
+    // Reduced offset to keep pedestrians on sidewalks but not off the road
+    offset = 0.25 * (agent.laneBias >= 0 ? 1 : -1);
   } else if (agent.type === "scooter") {
-    offset = (0.18 + sidewalkWidth) * (agent.laneBias >= 0 ? 1 : -1);
+    offset = 0.15 * (agent.laneBias >= 0 ? 1 : -1);
   } else {
     if (lanes === 2) {
-      offset = 0.12 * (agent.laneBias >= 0 ? 1 : -1);
+      offset = 0.10 * (agent.laneBias >= 0 ? 1 : -1);
     } else {
       offset = 0;
     }

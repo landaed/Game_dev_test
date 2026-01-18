@@ -9,6 +9,7 @@ uniform vec2 u_grid;
 uniform float u_time;
 uniform int u_viewMode;
 uniform int u_hideRoadTiles;
+uniform vec3 u_lightDir;
 
 in vec2 v_uv;
 in vec2 v_tileCoord;
@@ -234,6 +235,30 @@ void main() {
     float border = smoothstep(0.0, 0.05, uv.x) + smoothstep(1.0, 0.95, uv.x) +
       smoothstep(0.0, 0.05, uv.y) + smoothstep(1.0, 0.95, uv.y);
     color = mix(color, vec3(0.4, 0.8, 1.0), border * pulse * 0.6);
+  }
+
+  // Simple shadow approximation from nearby buildings
+  float shadow = 1.0;
+  if (tileType < 1.5) { // Only apply shadows to non-building tiles
+    // Calculate shadow direction based on light (opposite to light direction)
+    vec2 shadowDir = normalize(vec2(u_lightDir.x, u_lightDir.z));
+
+    // Check tiles in shadow direction for buildings
+    for (int i = 1; i <= 3; i++) {
+      ivec2 shadowCoord = coord + ivec2(shadowDir * float(i));
+      if (shadowCoord.x >= 0 && shadowCoord.x < int(u_grid.x) &&
+          shadowCoord.y >= 0 && shadowCoord.y < int(u_grid.y)) {
+        vec4 shadowTile = texelFetch(u_tileData, shadowCoord, 0);
+        float shadowType = shadowTile.r;
+        // If there's a building in the shadow direction
+        if (shadowType > 1.5) {
+          float shadowStrength = 0.35 / float(i); // Weaker with distance
+          shadow -= shadowStrength;
+        }
+      }
+    }
+    shadow = max(shadow, 0.3); // Don't go completely black
+    color *= shadow;
   }
 
   float vignetteDist = length(v_uv - vec2(0.5));
