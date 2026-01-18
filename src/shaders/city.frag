@@ -143,13 +143,13 @@ void main() {
       float arrowWest = arrowShape(vec2(1.0 - uv.y, uv.x));
       float arrowMask = 0.0;
       if (hasHorizontal && !hasVertical) {
-        arrowMask = max(arrowEast, arrowWest) * 0.35;
+        arrowMask = max(arrowEast, arrowWest) * 0.6;
       } else if (hasVertical && !hasHorizontal) {
-        arrowMask = max(arrowNorth, arrowSouth) * 0.35;
+        arrowMask = max(arrowNorth, arrowSouth) * 0.6;
       } else if (hasHorizontal && hasVertical) {
-        arrowMask = max(max(arrowEast, arrowWest), max(arrowNorth, arrowSouth)) * 0.22;
+        arrowMask = max(max(arrowEast, arrowWest), max(arrowNorth, arrowSouth)) * 0.4;
       }
-      color = mix(color, vec3(0.9, 0.95, 1.0), arrowMask);
+      color = mix(color, vec3(0.75, 0.95, 1.0), arrowMask);
     }
 
     if (hasSidewalk) {
