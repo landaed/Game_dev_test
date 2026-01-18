@@ -196,14 +196,16 @@ class AudioEngine {
   }
 
   updateListener(x: number, y: number, z: number, lookX: number, lookY: number, lookZ: number) {
-    if (!this.listener) return;
-    this.listener.positionX.value = x;
-    this.listener.positionY.value = y;
-    this.listener.positionZ.value = z;
-    this.listener.forwardX.value = lookX - x;
-    this.listener.forwardY.value = lookY - y;
-    this.listener.forwardZ.value = lookZ - z;
-    this.listener.upY.value = 1;
+    if (!this.listener || !this.ctx) return;
+    if (this.listener.positionX) {
+      this.listener.positionX.value = x;
+      this.listener.positionY.value = y;
+      this.listener.positionZ.value = z;
+      this.listener.forwardX.value = lookX - x;
+      this.listener.forwardY.value = lookY - y;
+      this.listener.forwardZ.value = lookZ - z;
+      this.listener.upY.value = 1;
+    }
   }
 
   startAmbientTraffic() {
@@ -708,7 +710,87 @@ function tilesCompatible(tile1: WFCTile, tile2: WFCTile, direction: 'north' | 'e
   return tile1.connections[direction] === tile2.connections[opposites[direction]];
 }
 
-function generateMapWFC() {
+function generateMapSimple() {
+  resetTileIndex();
+
+  // First pass: create a grid road network
+  for (let i = 0; i < TILE_COUNT; i++) {
+    const x = i % GRID_WIDTH;
+    const y = Math.floor(i / GRID_WIDTH);
+
+    // Create regular grid of roads
+    const isHorizontalRoad = y % 6 === 2;
+    const isVerticalRoad = x % 5 === 2;
+
+    if (isHorizontalRoad || isVerticalRoad) {
+      tileType[i] = 1; // Road
+      tileLanes[i] = Math.random() > 0.5 ? 2 : 1;
+      tileSidewalk[i] = Math.random() > 0.8 ? 0.08 : 0.0;
+      const speedRand = Math.random();
+      tileSpeed[i] = speedRand < 0.2 ? 20 : speedRand < 0.5 ? 30 : speedRand < 0.8 ? 40 : 50;
+
+      // One-way streets (some of them)
+      if (Math.random() > 0.7) {
+        if (isVerticalRoad && !isHorizontalRoad) {
+          tileOneWay[i] = Math.random() > 0.5 ? 1 : 3; // N or S
+        } else if (isHorizontalRoad && !isVerticalRoad) {
+          tileOneWay[i] = Math.random() > 0.5 ? 2 : 4; // E or W
+        }
+      }
+
+      tilePedOnly[i] = 0;
+      tileScooterRestrict[i] = 0;
+      tileNoiseBarrier[i] = 0;
+    } else {
+      // Buildings or grass
+      const rand = Math.random();
+      if (rand < 0.05) {
+        tileType[i] = 0; // Grass
+      } else if (rand < 0.35) {
+        tileType[i] = 2; // Residential
+        tileIndicesByType[2]?.push(i);
+      } else if (rand < 0.60) {
+        tileType[i] = 3; // Commercial
+        tileIndicesByType[3]?.push(i);
+      } else if (rand < 0.80) {
+        tileType[i] = 4; // Industrial
+        tileIndicesByType[4]?.push(i);
+      } else if (rand < 0.87) {
+        tileType[i] = 5; // Park
+        tileIndicesByType[5]?.push(i);
+      } else if (rand < 0.92) {
+        tileType[i] = 6; // School
+        tileIndicesByType[6]?.push(i);
+      } else if (rand < 0.96) {
+        tileType[i] = 7; // Night Market
+        tileIndicesByType[7]?.push(i);
+      } else if (rand < 0.98) {
+        tileType[i] = 8; // Temple
+        tileIndicesByType[8]?.push(i);
+      } else {
+        tileType[i] = 9; // Mall
+        tileIndicesByType[9]?.push(i);
+      }
+
+      tileLanes[i] = 0;
+      tileSidewalk[i] = 0;
+      tileSpeed[i] = 0;
+      tileOneWay[i] = 0;
+      tilePedOnly[i] = 0;
+      tileScooterRestrict[i] = 0;
+      tileNoiseBarrier[i] = 0;
+    }
+  }
+
+  const typeCounts: Record<number, number> = {};
+  for (let i = 0; i < TILE_COUNT; i++) {
+    typeCounts[tileType[i]] = (typeCounts[tileType[i]] || 0) + 1;
+  }
+  console.log('Generated tiles by type:', typeCounts);
+  console.log('tileIndicesByType counts:', Object.entries(tileIndicesByType).map(([k, v]) => `${k}: ${v.length}`).join(', '));
+}
+
+function generateMapWFC_OLD() {
   resetTileIndex();
 
   interface Cell {
@@ -809,25 +891,40 @@ function generateMapWFC() {
   }
 
   // Seed with connected road grid to ensure connectivity
-  // Create horizontal road corridors
+  // First collapse horizontal road corridors
   for (let y = 2; y < GRID_HEIGHT; y += 6) {
     for (let x = 0; x < GRID_WIDTH; x++) {
       const idx = indexFor(x, y);
       // Force horizontal roads (straight E-W or intersections)
       const horizontalRoads = [7, 1, 2, 4, 5]; // E-W straight, 4-way, T-junctions
-      grid[idx].possibilities = horizontalRoads;
+      const chosen = horizontalRoads[Math.floor(Math.random() * horizontalRoads.length)];
+      grid[idx].possibilities = [chosen];
+      grid[idx].collapsed = true;
     }
   }
 
-  // Create vertical road corridors
+  // Then collapse vertical road corridors
   for (let x = 2; x < GRID_WIDTH; x += 5) {
     for (let y = 0; y < GRID_HEIGHT; y++) {
       const idx = indexFor(x, y);
+      if (grid[idx].collapsed) continue; // Skip already collapsed cells
       // Force vertical roads (straight N-S or intersections)
       const verticalRoads = [6, 1, 2, 3, 5]; // N-S straight, 4-way, T-junctions
-      if (grid[idx].possibilities.length > 10) { // Only if not already constrained
-        grid[idx].possibilities = verticalRoads;
-      }
+      const chosen = verticalRoads[Math.floor(Math.random() * verticalRoads.length)];
+      grid[idx].possibilities = [chosen];
+      grid[idx].collapsed = true;
+    }
+  }
+
+  // Propagate constraints from all seeded roads
+  for (let y = 2; y < GRID_HEIGHT; y += 6) {
+    for (let x = 0; x < GRID_WIDTH; x++) {
+      propagateConstraints(indexFor(x, y));
+    }
+  }
+  for (let x = 2; x < GRID_WIDTH; x += 5) {
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+      propagateConstraints(indexFor(x, y));
     }
   }
 
@@ -910,7 +1007,7 @@ function rebuildTileIndex() {
   }
 }
 
-generateMapWFC();
+generateMapSimple();
 
 function buildBuildingInstances() {
   const instances: number[] = [];
@@ -1856,10 +1953,12 @@ canvas.addEventListener("click", async (event) => {
   }
   selectedAgent = null;
   const worldPos = screenToWorld(x, y, invViewProj);
+  console.log(`Click screen: (${x.toFixed(0)}, ${y.toFixed(0)}) -> world: ${worldPos ? `(${worldPos.x.toFixed(2)}, ${worldPos.z.toFixed(2)})` : 'null'}`);
   if (worldPos) {
     const tileX = clamp(Math.floor(worldPos.x), 0, GRID_WIDTH - 1);
     const tileY = clamp(Math.floor(worldPos.z), 0, GRID_HEIGHT - 1);
     const idx = indexFor(tileX, tileY);
+    console.log(`Selected tile (${tileX}, ${tileY}), idx=${idx}, type=${tileType[idx]}`);
     selectedIndex = idx;
     selection.fill(0);
     selection[idx] = 1;
@@ -1873,15 +1972,18 @@ canvas.addEventListener("contextmenu", (event) => {
 });
 
 canvas.addEventListener("mousedown", (event) => {
+  console.log(`Mouse down: button=${event.button}`);
   if (event.button === 1) {
     isDraggingPan = true;
     lastMouseX = event.clientX;
     lastMouseY = event.clientY;
     event.preventDefault();
+    console.log("Pan mode activated");
   } else if (event.button === 2) {
     isDraggingRotate = true;
     lastMouseX = event.clientX;
     lastMouseY = event.clientY;
+    console.log("Rotate mode activated");
   }
 });
 
@@ -1889,13 +1991,14 @@ canvas.addEventListener("mousemove", (event) => {
   if (isDraggingPan) {
     const dx = event.clientX - lastMouseX;
     const dy = event.clientY - lastMouseY;
-    const panSpeed = 0.05;
+    const panSpeed = 0.1;
     const right = Math.cos(cameraAngle);
     const forward = -Math.sin(cameraAngle);
     cameraPanX += (right * dx - forward * dy) * panSpeed;
     cameraPanZ += (forward * dx + right * dy) * panSpeed;
     lastMouseX = event.clientX;
     lastMouseY = event.clientY;
+    console.log(`Pan: ${cameraPanX.toFixed(2)}, ${cameraPanZ.toFixed(2)}`);
   } else if (isDraggingRotate) {
     const dx = event.clientX - lastMouseX;
     const dy = event.clientY - lastMouseY;
@@ -1903,6 +2006,7 @@ canvas.addEventListener("mousemove", (event) => {
     cameraTilt = clamp(cameraTilt + dy * 0.005, Math.PI / 8, Math.PI / 2.2);
     lastMouseX = event.clientX;
     lastMouseY = event.clientY;
+    console.log(`Rotate: angle=${cameraAngle.toFixed(2)}, tilt=${cameraTilt.toFixed(2)}`);
   }
 });
 
@@ -1918,8 +2022,9 @@ canvas.addEventListener("mouseleave", () => {
 
 canvas.addEventListener("wheel", (event) => {
   event.preventDefault();
-  const zoomSpeed = 0.002;
+  const zoomSpeed = 0.05;
   cameraDistance = clamp(cameraDistance + event.deltaY * zoomSpeed, 10, 50);
+  console.log(`Zoom: ${cameraDistance.toFixed(2)}`);
 }, { passive: false });
 
 function initUI() {
