@@ -808,12 +808,26 @@ function generateMapWFC() {
     return true;
   }
 
-  // Seed with some roads at grid intervals
-  for (let y = 0; y < GRID_HEIGHT; y += 6) {
-    for (let x = 0; x < GRID_WIDTH; x += 5) {
+  // Seed with connected road grid to ensure connectivity
+  // Create horizontal road corridors
+  for (let y = 2; y < GRID_HEIGHT; y += 6) {
+    for (let x = 0; x < GRID_WIDTH; x++) {
       const idx = indexFor(x, y);
-      const roadTiles = [1, 2, 3, 4, 5, 6, 7]; // Indices of road tiles in WFC_TILES
-      grid[idx].possibilities = roadTiles;
+      // Force horizontal roads (straight E-W or intersections)
+      const horizontalRoads = [7, 1, 2, 4, 5]; // E-W straight, 4-way, T-junctions
+      grid[idx].possibilities = horizontalRoads;
+    }
+  }
+
+  // Create vertical road corridors
+  for (let x = 2; x < GRID_WIDTH; x += 5) {
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+      const idx = indexFor(x, y);
+      // Force vertical roads (straight N-S or intersections)
+      const verticalRoads = [6, 1, 2, 3, 5]; // N-S straight, 4-way, T-junctions
+      if (grid[idx].possibilities.length > 10) { // Only if not already constrained
+        grid[idx].possibilities = verticalRoads;
+      }
     }
   }
 
@@ -834,9 +848,11 @@ function generateMapWFC() {
   }
 
   // Apply results to actual game grid
+  const typeCounts: Record<number, number> = {};
   for (let i = 0; i < TILE_COUNT; i++) {
     const wfcTile = WFC_TILES[grid[i].possibilities[0]];
     tileType[i] = wfcTile.type;
+    typeCounts[wfcTile.type] = (typeCounts[wfcTile.type] || 0) + 1;
 
     if (wfcTile.type === 1) {
       tileLanes[i] = Math.random() > 0.5 ? 2 : 1;
@@ -880,6 +896,9 @@ function generateMapWFC() {
       tileIndicesByType[wfcTile.type]?.push(i);
     }
   }
+
+  console.log('WFC generated tiles by type:', typeCounts);
+  console.log('tileIndicesByType counts:', Object.entries(tileIndicesByType).map(([k, v]) => `${k}: ${v.length}`).join(', '));
 }
 
 function rebuildTileIndex() {
@@ -1525,7 +1544,8 @@ function spawnAgents() {
     const startRoad = findNearestRoad(start);
     const endRoad = findNearestRoad(end);
     if (startRoad === null || endRoad === null) continue;
-    const path = aStar(startRoad, endRoad) ?? [];
+    const path = aStar(startRoad, endRoad);
+    if (!path || path.length === 0) continue; // Only spawn agents with valid paths
     const startPos = tileCenter(startRoad);
     agents.push({
       id: i,
@@ -1537,6 +1557,7 @@ function spawnAgents() {
       destination: endRoad
     });
   }
+  console.log(`Spawned ${agents.length} agents (all have valid paths)`);
 }
 
 function agentSpeed(type: AgentType) {
@@ -1546,7 +1567,9 @@ function agentSpeed(type: AgentType) {
   return 0.4;
 }
 
+let updateAgentDebugCounter = 0;
 function updateAgents(dt: number) {
+  let movedCount = 0;
   for (const agent of agents) {
     if (agent.path.length === 0) continue;
     const currentIndex = agent.path[agent.pathIndex];
@@ -1555,6 +1578,7 @@ function updateAgents(dt: number) {
     const nextPos = tileCenter(nextIndex);
     const speed = agentSpeed(agent.type) * dt;
     agent.progress += speed;
+    if (agent.progress > 0.01) movedCount++;
     if (agent.progress >= 1) {
       agent.pathIndex = Math.min(agent.pathIndex + 1, agent.path.length - 1);
       agent.progress = 0;
@@ -1574,6 +1598,9 @@ function updateAgents(dt: number) {
     const t = agent.progress;
     agent.position.x = currentPos.x + (nextPos.x - currentPos.x) * t;
     agent.position.z = currentPos.z + (nextPos.z - currentPos.z) * t;
+  }
+  if (updateAgentDebugCounter++ % 60 === 0) {
+    console.log(`updateAgents called. Agents: ${agents.length}, Moving: ${movedCount}, dt: ${dt.toFixed(4)}`);
   }
 }
 
