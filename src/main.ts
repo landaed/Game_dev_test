@@ -1,8 +1,13 @@
 import vertSource from "./shaders/city.vert?raw";
 import fragSource from "./shaders/city.frag?raw";
+import buildingVert from "./shaders/building.vert?raw";
+import buildingFrag from "./shaders/building.frag?raw";
+import agentVert from "./shaders/agent.vert?raw";
+import agentFrag from "./shaders/agent.frag?raw";
 import "./styles.css";
 
 type TileType = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type AgentType = "pedestrian" | "scooter" | "car" | "truck";
 
 const GRID_WIDTH = 40;
 const GRID_HEIGHT = 30;
@@ -48,6 +53,21 @@ const selection = new Float32Array(TILE_COUNT);
 const tileDataTexels = new Float32Array(TILE_COUNT * 4);
 const metrics0Texels = new Float32Array(TILE_COUNT * 4);
 const metrics1Texels = new Float32Array(TILE_COUNT * 4);
+
+type Agent = {
+  id: number;
+  type: AgentType;
+  path: number[];
+  pathIndex: number;
+  progress: number;
+  position: { x: number; z: number };
+  destination: number;
+};
+
+const agents: Agent[] = [];
+let selectedAgent: Agent | null = null;
+let buildingInstanceCount = 0;
+let buildingInstances = new Float32Array(0);
 
 const policyList = [
   {
@@ -142,6 +162,86 @@ if (!gl) {
   throw new Error("WebGL2 not supported");
 }
 
+function mat4Identity() {
+  const out = new Float32Array(16);
+  out[0] = 1;
+  out[5] = 1;
+  out[10] = 1;
+  out[15] = 1;
+  return out;
+}
+
+function mat4Multiply(a: Float32Array, b: Float32Array) {
+  const out = new Float32Array(16);
+  for (let i = 0; i < 4; i++) {
+    for (let j = 0; j < 4; j++) {
+      out[i * 4 + j] =
+        a[i * 4 + 0] * b[0 * 4 + j] +
+        a[i * 4 + 1] * b[1 * 4 + j] +
+        a[i * 4 + 2] * b[2 * 4 + j] +
+        a[i * 4 + 3] * b[3 * 4 + j];
+    }
+  }
+  return out;
+}
+
+function mat4Perspective(fov: number, aspect: number, near: number, far: number) {
+  const f = 1.0 / Math.tan(fov / 2);
+  const out = new Float32Array(16);
+  out[0] = f / aspect;
+  out[5] = f;
+  out[10] = (far + near) / (near - far);
+  out[11] = -1;
+  out[14] = (2 * far * near) / (near - far);
+  return out;
+}
+
+function mat4LookAt(eye: [number, number, number], target: [number, number, number], up: [number, number, number]) {
+  const [ex, ey, ez] = eye;
+  const [tx, ty, tz] = target;
+  const [ux, uy, uz] = up;
+  let zx = ex - tx;
+  let zy = ey - ty;
+  let zz = ez - tz;
+  const zLen = Math.hypot(zx, zy, zz) || 1;
+  zx /= zLen;
+  zy /= zLen;
+  zz /= zLen;
+  let xx = uy * zz - uz * zy;
+  let xy = uz * zx - ux * zz;
+  let xz = ux * zy - uy * zx;
+  const xLen = Math.hypot(xx, xy, xz) || 1;
+  xx /= xLen;
+  xy /= xLen;
+  xz /= xLen;
+  const yx = zy * xz - zz * xy;
+  const yy = zz * xx - zx * xz;
+  const yz = zx * xy - zy * xx;
+  const out = mat4Identity();
+  out[0] = xx;
+  out[1] = yx;
+  out[2] = zx;
+  out[4] = xy;
+  out[5] = yy;
+  out[6] = zy;
+  out[8] = xz;
+  out[9] = yz;
+  out[10] = zz;
+  out[12] = -(xx * ex + xy * ey + xz * ez);
+  out[13] = -(yx * ex + yy * ey + yz * ez);
+  out[14] = -(zx * ex + zy * ey + zz * ez);
+  return out;
+}
+
+function transformPoint(m: Float32Array, v: [number, number, number, number]) {
+  const [x, y, z, w] = v;
+  const nx = m[0] * x + m[4] * y + m[8] * z + m[12] * w;
+  const ny = m[1] * x + m[5] * y + m[9] * z + m[13] * w;
+  const nz = m[2] * x + m[6] * y + m[10] * z + m[14] * w;
+  const nw = m[3] * x + m[7] * y + m[11] * z + m[15] * w;
+  return [nx, ny, nz, nw] as const;
+}
+
 function createShader(type: number, source: string) {
   const shader = gl.createShader(type);
   if (!shader) {
@@ -169,10 +269,19 @@ function createProgram(vertexSource: string, fragmentSource: string) {
   return program;
 }
 
-const program = createProgram(vertSource, fragSource);
+const groundProgram = createProgram(vertSource, fragSource);
+const buildingProgram = createProgram(buildingVert, buildingFrag);
+const agentProgram = createProgram(agentVert, agentFrag);
+
 const positionBuffer = gl.createBuffer();
-const vao = gl.createVertexArray();
-if (!vao || !positionBuffer) {
+const cubeBuffer = gl.createBuffer();
+const groundVao = gl.createVertexArray();
+const buildingVao = gl.createVertexArray();
+const agentVao = gl.createVertexArray();
+const buildingInstanceBuffer = gl.createBuffer();
+const agentInstanceBuffer = gl.createBuffer();
+
+if (!groundVao || !positionBuffer || !cubeBuffer || !buildingVao || !agentVao || !buildingInstanceBuffer || !agentInstanceBuffer) {
   throw new Error("WebGL buffer failed");
 }
 
@@ -185,9 +294,27 @@ const quad = new Float32Array([
   1, 1
 ]);
 
-const uGrid = gl.getUniformLocation(program, "u_grid");
-const uTime = gl.getUniformLocation(program, "u_time");
-const uViewMode = gl.getUniformLocation(program, "u_viewMode");
+const cube = new Float32Array([
+  -0.4, 0, -0.4, 0.4, 0, -0.4, 0.4, 1, -0.4,
+  -0.4, 0, -0.4, 0.4, 1, -0.4, -0.4, 1, -0.4,
+  -0.4, 0, 0.4, 0.4, 0, 0.4, 0.4, 1, 0.4,
+  -0.4, 0, 0.4, 0.4, 1, 0.4, -0.4, 1, 0.4,
+  -0.4, 0, -0.4, -0.4, 0, 0.4, -0.4, 1, 0.4,
+  -0.4, 0, -0.4, -0.4, 1, 0.4, -0.4, 1, -0.4,
+  0.4, 0, -0.4, 0.4, 0, 0.4, 0.4, 1, 0.4,
+  0.4, 0, -0.4, 0.4, 1, 0.4, 0.4, 1, -0.4,
+  -0.4, 1, -0.4, 0.4, 1, -0.4, 0.4, 1, 0.4,
+  -0.4, 1, -0.4, 0.4, 1, 0.4, -0.4, 1, 0.4,
+  -0.4, 0, -0.4, 0.4, 0, -0.4, 0.4, 0, 0.4,
+  -0.4, 0, -0.4, 0.4, 0, 0.4, -0.4, 0, 0.4
+]);
+
+const uGrid = gl.getUniformLocation(groundProgram, "u_grid");
+const uTime = gl.getUniformLocation(groundProgram, "u_time");
+const uViewMode = gl.getUniformLocation(groundProgram, "u_viewMode");
+const uViewProj = gl.getUniformLocation(groundProgram, "u_viewProj");
+const uBuildingViewProj = gl.getUniformLocation(buildingProgram, "u_viewProj");
+const uAgentViewProj = gl.getUniformLocation(agentProgram, "u_viewProj");
 
 const tileDataTex = gl.createTexture();
 const metrics0Tex = gl.createTexture();
@@ -196,6 +323,8 @@ const metrics1Tex = gl.createTexture();
 if (!tileDataTex || !metrics0Tex || !metrics1Tex) {
   throw new Error("Texture creation failed");
 }
+
+let viewProj = mat4Identity();
 
 function setupTexture(tex: WebGLTexture) {
   gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -218,8 +347,34 @@ function resizeCanvas() {
   }
 }
 
+function updateCamera() {
+  const aspect = canvas.width / Math.max(1, canvas.height);
+  const fov = Math.PI / 3;
+  const projection = mat4Perspective(fov, aspect, 0.1, 200);
+  const centerX = GRID_WIDTH * 0.5;
+  const centerZ = GRID_HEIGHT * 0.5;
+  const eye: [number, number, number] = [centerX, 24, centerZ + 22];
+  const target: [number, number, number] = [centerX, 0, centerZ];
+  const view = mat4LookAt(eye, target, [0, 1, 0]);
+  viewProj = mat4Multiply(projection, view);
+}
+
+function projectToScreen(pos: { x: number; y: number; z: number }) {
+  const [nx, ny, nz, nw] = transformPoint(viewProj, [pos.x, pos.y, pos.z, 1]);
+  const w = nw || 1;
+  const sx = ((nx / w + 1) * 0.5) * canvas.width;
+  const sy = ((1 - ny / w) * 0.5) * canvas.height;
+  return { x: sx, y: sy, z: nz / w };
+}
+
 function indexFor(x: number, y: number) {
   return y * GRID_WIDTH + x;
+}
+
+function tileCenter(index: number) {
+  const x = index % GRID_WIDTH;
+  const y = Math.floor(index / GRID_WIDTH);
+  return { x: x + 0.5, z: y + 0.5 };
 }
 
 function resetTileIndex() {
@@ -272,6 +427,22 @@ function generateMap() {
 }
 generateMap();
 
+function buildBuildingInstances() {
+  const instances: number[] = [];
+  for (let i = 0; i < TILE_COUNT; i++) {
+    if (tileType[i] <= 1) continue;
+    const x = i % GRID_WIDTH;
+    const y = Math.floor(i / GRID_WIDTH);
+    const height =
+      tileType[i] === 2 ? 1.4 : tileType[i] === 3 ? 2.0 : tileType[i] === 4 ? 1.6 : tileType[i] === 7 ? 1.2 : 0.8;
+    instances.push(x + 0.5, y + 0.5, height + (Math.sin(i) * 0.2 + 0.2), tileType[i]);
+  }
+  buildingInstances = new Float32Array(instances);
+  buildingInstanceCount = buildingInstances.length / 4;
+  gl.bindBuffer(gl.ARRAY_BUFFER, buildingInstanceBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, buildingInstances, gl.DYNAMIC_DRAW);
+}
+
 function updateTileOrientation() {
   for (let y = 0; y < GRID_HEIGHT; y++) {
     for (let x = 0; x < GRID_WIDTH; x++) {
@@ -292,13 +463,36 @@ function updateTileOrientation() {
 }
 
 updateTileOrientation();
+buildBuildingInstances();
+spawnAgents();
 
 function buildBuffers() {
-  gl.bindVertexArray(vao);
+  gl.bindVertexArray(groundVao);
   gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
   gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
   gl.enableVertexAttribArray(0);
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+
+  gl.bindVertexArray(buildingVao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, cubeBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, cube, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buildingInstanceBuffer);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 0, 0);
+  gl.vertexAttribDivisor(1, 1);
+  gl.bindVertexArray(null);
+
+  gl.bindVertexArray(agentVao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, cubeBuffer);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, agentInstanceBuffer);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 0, 0);
+  gl.vertexAttribDivisor(1, 1);
   gl.bindVertexArray(null);
 }
 
@@ -364,12 +558,15 @@ function updateTextures() {
 
 function render() {
   resizeCanvas();
+  updateCamera();
+  gl.enable(gl.DEPTH_TEST);
   gl.clearColor(0, 0, 0, 1);
-  gl.clear(gl.COLOR_BUFFER_BIT);
-  gl.useProgram(program);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(groundProgram);
   gl.uniform2f(uGrid, GRID_WIDTH, GRID_HEIGHT);
   gl.uniform1f(uTime, state.time);
   gl.uniform1i(uViewMode, viewMode);
+  gl.uniformMatrix4fv(uViewProj, false, viewProj);
 
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, tileDataTex);
@@ -378,15 +575,27 @@ function render() {
   gl.activeTexture(gl.TEXTURE2);
   gl.bindTexture(gl.TEXTURE_2D, metrics1Tex);
 
-  const uTileData = gl.getUniformLocation(program, "u_tileData");
-  const uMetrics0 = gl.getUniformLocation(program, "u_metrics0");
-  const uMetrics1 = gl.getUniformLocation(program, "u_metrics1");
+  const uTileData = gl.getUniformLocation(groundProgram, "u_tileData");
+  const uMetrics0 = gl.getUniformLocation(groundProgram, "u_metrics0");
+  const uMetrics1 = gl.getUniformLocation(groundProgram, "u_metrics1");
   gl.uniform1i(uTileData, 0);
   gl.uniform1i(uMetrics0, 1);
   gl.uniform1i(uMetrics1, 2);
 
-  gl.bindVertexArray(vao);
+  gl.bindVertexArray(groundVao);
   gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, TILE_COUNT);
+  gl.bindVertexArray(null);
+
+  gl.useProgram(buildingProgram);
+  gl.uniformMatrix4fv(uBuildingViewProj, false, viewProj);
+  gl.bindVertexArray(buildingVao);
+  gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, buildingInstanceCount);
+  gl.bindVertexArray(null);
+
+  gl.useProgram(agentProgram);
+  gl.uniformMatrix4fv(uAgentViewProj, false, viewProj);
+  gl.bindVertexArray(agentVao);
+  gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, agents.length);
   gl.bindVertexArray(null);
 }
 
@@ -507,6 +716,18 @@ function updateLeftPanel() {
 }
 
 function updateRightPanel() {
+  if (selectedAgent) {
+    rightPanel.innerHTML = `
+      <h2>Agent</h2>
+      <div class="card">
+        <div><strong>${selectedAgent.type.toUpperCase()}</strong></div>
+        <div class="small">Destination tile: ${selectedAgent.destination}</div>
+        <div class="small">Path step: ${selectedAgent.pathIndex + 1}/${selectedAgent.path.length}</div>
+        <div class="small">Position: (${selectedAgent.position.x.toFixed(2)}, ${selectedAgent.position.z.toFixed(2)})</div>
+      </div>
+    `;
+    return;
+  }
   if (selectedIndex === null) {
     rightPanel.innerHTML = `
       <h2>Selection</h2>
@@ -679,6 +900,7 @@ function loadGame() {
     if (policy) policy.active = p.active;
   });
   rebuildTileIndex();
+  buildBuildingInstances();
   showToast("Save loaded.");
   updateLeftPanel();
   updateRightPanel();
@@ -776,6 +998,82 @@ function runTrips(count: number) {
       traffic[step] += 0.01;
     }
   }
+}
+
+function spawnAgents() {
+  agents.length = 0;
+  const types: AgentType[] = ["pedestrian", "scooter", "car", "truck"];
+  for (let i = 0; i < 80; i++) {
+    const type = types[i % types.length];
+    const start = randomTile(2) ?? randomTile(3);
+    const end = randomTile(3) ?? randomTile(2);
+    if (start === null || end === null) continue;
+    const startRoad = findNearestRoad(start);
+    const endRoad = findNearestRoad(end);
+    if (startRoad === null || endRoad === null) continue;
+    const path = aStar(startRoad, endRoad) ?? [];
+    const startPos = tileCenter(startRoad);
+    agents.push({
+      id: i,
+      type,
+      path,
+      pathIndex: 0,
+      progress: 0,
+      position: { x: startPos.x, z: startPos.z },
+      destination: endRoad
+    });
+  }
+}
+
+function agentSpeed(type: AgentType) {
+  if (type === "pedestrian") return 0.6;
+  if (type === "scooter") return 1.4;
+  if (type === "car") return 1.0;
+  return 0.8;
+}
+
+function updateAgents(dt: number) {
+  for (const agent of agents) {
+    if (agent.path.length === 0) continue;
+    const currentIndex = agent.path[agent.pathIndex];
+    const nextIndex = agent.path[Math.min(agent.pathIndex + 1, agent.path.length - 1)];
+    const currentPos = tileCenter(currentIndex);
+    const nextPos = tileCenter(nextIndex);
+    const speed = agentSpeed(agent.type) * dt;
+    agent.progress += speed;
+    if (agent.progress >= 1) {
+      agent.pathIndex = Math.min(agent.pathIndex + 1, agent.path.length - 1);
+      agent.progress = 0;
+      if (agent.pathIndex >= agent.path.length - 1) {
+        const newEnd = randomTile(Math.random() > 0.6 ? 3 : 2);
+        const newEndRoad = newEnd !== null ? findNearestRoad(newEnd) : null;
+        if (newEndRoad !== null) {
+          agent.destination = newEndRoad;
+          const newPath = aStar(currentIndex, newEndRoad);
+          if (newPath) {
+            agent.path = newPath;
+            agent.pathIndex = 0;
+          }
+        }
+      }
+    }
+    const t = agent.progress;
+    agent.position.x = currentPos.x + (nextPos.x - currentPos.x) * t;
+    agent.position.z = currentPos.z + (nextPos.z - currentPos.z) * t;
+  }
+}
+
+function updateAgentInstances() {
+  const data = new Float32Array(agents.length * 4);
+  agents.forEach((agent, i) => {
+    const base = i * 4;
+    data[base] = agent.position.x;
+    data[base + 1] = agent.position.z;
+    data[base + 2] = agent.type === "pedestrian" ? 0.18 : agent.type === "scooter" ? 0.22 : agent.type === "car" ? 0.3 : 0.4;
+    data[base + 3] = agent.type === "pedestrian" ? 0 : agent.type === "scooter" ? 1 : agent.type === "car" ? 2 : 3;
+  });
+  gl.bindBuffer(gl.ARRAY_BUFFER, agentInstanceBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
 }
 
 function findNearestRoad(index: number) {
@@ -958,7 +1256,9 @@ function tick(dt: number) {
   state.time += dt;
   state.electionTimer -= dt;
   evaluateSimulation(dt);
+  updateAgents(dt);
   updateTextures();
+  updateAgentInstances();
   updateHud();
   updateRightPanel();
 }
@@ -986,6 +1286,27 @@ canvas.addEventListener("click", (event) => {
   const rect = canvas.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
+  updateCamera();
+  let pickedAgent: Agent | null = null;
+  let minDist = Infinity;
+  agents.forEach((agent) => {
+    const screen = projectToScreen({ x: agent.position.x, y: 0.2, z: agent.position.z });
+    const dx = screen.x - x;
+    const dy = screen.y - y;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 14 && dist < minDist) {
+      pickedAgent = agent;
+      minDist = dist;
+    }
+  });
+  if (pickedAgent) {
+    selectedAgent = pickedAgent;
+    selectedIndex = null;
+    selection.fill(0);
+    updateRightPanel();
+    return;
+  }
+  selectedAgent = null;
   const tileX = clamp(Math.floor((x / rect.width) * GRID_WIDTH), 0, GRID_WIDTH - 1);
   const tileY = clamp(Math.floor(((rect.height - y) / rect.height) * GRID_HEIGHT), 0, GRID_HEIGHT - 1);
   const idx = indexFor(tileX, tileY);
@@ -1009,4 +1330,5 @@ function initUI() {
 
 initUI();
 updateTextures();
+updateAgentInstances();
 loop();

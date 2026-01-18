@@ -10,6 +10,7 @@ npm run dev
 
 ## Controls
 - **Click** a tile to select it.
+- **Click** pedestrians/scooters/cars/trucks to inspect their routes.
 - **Left panel**: apply road actions or enact/repeal policies.
 - **Bottom bar**: switch heatmap view modes and simulation speed.
 - **Save/Load** uses `localStorage`.
@@ -18,6 +19,7 @@ npm run dev
 - **Urban edits**: toggle one-way, change speed limits, add sidewalks, pedestrianize streets, apply scooter restrictions, or add noise barriers.
 - **Policies**: 8 citywide policies with political point + cash costs. Active policies shift traffic, noise, and income.
 - **Simulation**: traffic, noise, pedestrian friendliness, income, and happiness update in real time.
+- **Agents**: pedestrians, scooters, cars, and trucks move through the city and can be clicked for metadata.
 - **Elections**: approval is checked every election interval (defaults to 180s in quick mode). Fail with approval below 50.
 - **Bankruptcy**: lose if cash deficit or debt exceeds limits.
 
@@ -31,7 +33,7 @@ Inside `src/main.ts`:
 - `GRID_WIDTH = 40`, `GRID_HEIGHT = 30`
 
 ## Shader Pipeline Overview
-- **Rendering approach**: tile instancing over a 40x30 grid.
+- **Rendering approach**: 3D tile instancing over a 40x30 grid with a tilted camera, plus instanced cubes for buildings and moving agents.
 - **Data textures**:
   - `u_tileData` packs `tileType`, `lanes`, `sidewalkWidth`, `speedLimit`.
   - `u_metrics0` packs `traffic`, `noise`, `ped`, `income`.
@@ -39,7 +41,7 @@ Inside `src/main.ts`:
 - **Procedural materials**:
   - Roads: fBm asphalt grain, lane stripes, cracks, and chevron arrows for one-way hints.
   - Sidewalks: concrete slab grid, curb highlights, sidewalk width baked into UV.
-  - Buildings: hashed per-tile roof color variation and AC unit details.
+  - Buildings: hashed per-tile roof color variation, window grids, and height-based shading.
 - **Heatmaps**: blended in the fragment shader with smooth gradient + noise dithering to reduce banding.
 
 ## Policies
