@@ -25,5 +25,5 @@ void main() {
   v_dir = forward;
   v_meta0 = a_meta0;
   v_meta1 = a_meta1;
-  gl_Position = u_viewProj * vec4(pos.x, 0.02, pos.y, 1.0);
+  gl_Position = u_viewProj * vec4(pos.x, 0.02 + a_meta1.w, pos.y, 1.0);
 }

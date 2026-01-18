@@ -25,7 +25,7 @@ float arrowShape(vec2 uv) {
 void main() {
   float width = v_meta0.x;
   float sidewalk = v_meta0.y;
-  float lanes = max(1.0, v_meta0.z);
+  float lanes = clamp(v_meta0.z, 1.0, 2.0);
   float oneWay = v_meta0.w;
   float hasSignal = v_meta1.x;
   float signalOffset = v_meta1.y;

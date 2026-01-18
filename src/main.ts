@@ -2,6 +2,8 @@ import vertSource from "./shaders/city.vert?raw";
 import fragSource from "./shaders/city.frag?raw";
 import roadVert from "./shaders/road.vert?raw";
 import roadFrag from "./shaders/road.frag?raw";
+import postVert from "./shaders/post.vert?raw";
+import postFrag from "./shaders/post.frag?raw";
 import buildingVert from "./shaders/building.vert?raw";
 import buildingFrag from "./shaders/building.frag?raw";
 import agentVert from "./shaders/agent.vert?raw";
@@ -372,6 +374,21 @@ type Agent = {
   progress: number;
   position: { x: number; z: number };
   destination: number;
+  laneBias: number;
+};
+
+type RoadPoint = { x: number; z: number };
+type RoadSegment = {
+  id: number;
+  tiles: number[];
+  points: RoadPoint[];
+  lanes: number;
+  sidewalk: number;
+  speed: number;
+  isArterial: boolean;
+  hasCrosswalk: boolean;
+  hasSignal: boolean;
+  oneWay: number;
 };
 
 type RoadPoint = { x: number; z: number };
@@ -658,6 +675,7 @@ function createProgram(vertexSource: string, fragmentSource: string) {
 
 const groundProgram = createProgram(vertSource, fragSource);
 const roadProgram = createProgram(roadVert, roadFrag);
+const postProgram = createProgram(postVert, postFrag);
 const buildingProgram = createProgram(buildingVert, buildingFrag);
 const agentProgram = createProgram(agentVert, agentFrag);
 
@@ -666,13 +684,14 @@ const roadPositionBuffer = gl.createBuffer();
 const cubeBuffer = gl.createBuffer();
 const groundVao = gl.createVertexArray();
 const roadVao = gl.createVertexArray();
+const postVao = gl.createVertexArray();
 const buildingVao = gl.createVertexArray();
 const agentVao = gl.createVertexArray();
 const buildingInstanceBuffer = gl.createBuffer();
 const agentInstanceBuffer = gl.createBuffer();
 const roadInstanceBuffer = gl.createBuffer();
 
-if (!groundVao || !roadVao || !positionBuffer || !roadPositionBuffer || !cubeBuffer || !buildingVao || !agentVao || !buildingInstanceBuffer || !agentInstanceBuffer || !roadInstanceBuffer) {
+if (!groundVao || !roadVao || !postVao || !positionBuffer || !roadPositionBuffer || !cubeBuffer || !buildingVao || !agentVao || !buildingInstanceBuffer || !agentInstanceBuffer || !roadInstanceBuffer) {
   throw new Error("WebGL buffer failed");
 }
 
@@ -718,13 +737,20 @@ const uBuildingViewProj = gl.getUniformLocation(buildingProgram, "u_viewProj");
 const uAgentViewProj = gl.getUniformLocation(agentProgram, "u_viewProj");
 const uRoadViewProj = gl.getUniformLocation(roadProgram, "u_viewProj");
 const uRoadTime = gl.getUniformLocation(roadProgram, "u_time");
+const uPostScene = gl.getUniformLocation(postProgram, "u_scene");
+const uPostDepth = gl.getUniformLocation(postProgram, "u_depth");
+const uPostResolution = gl.getUniformLocation(postProgram, "u_resolution");
+const uPostFocus = gl.getUniformLocation(postProgram, "u_focusDistance");
 
 const tileDataTex = gl.createTexture();
 const metrics0Tex = gl.createTexture();
 const metrics1Tex = gl.createTexture();
 const metrics2Tex = gl.createTexture();
+const sceneColorTex = gl.createTexture();
+const sceneDepthTex = gl.createTexture();
+const sceneFbo = gl.createFramebuffer();
 
-if (!tileDataTex || !metrics0Tex || !metrics1Tex || !metrics2Tex) {
+if (!tileDataTex || !metrics0Tex || !metrics1Tex || !metrics2Tex || !sceneColorTex || !sceneDepthTex || !sceneFbo) {
   throw new Error("Texture creation failed");
 }
 
@@ -743,6 +769,8 @@ setupTexture(tileDataTex);
 setupTexture(metrics0Tex);
 setupTexture(metrics1Tex);
 setupTexture(metrics2Tex);
+setupTexture(sceneColorTex);
+setupTexture(sceneDepthTex);
 
 function resizeCanvas() {
   const { clientWidth, clientHeight } = canvas;
@@ -750,6 +778,14 @@ function resizeCanvas() {
     canvas.width = clientWidth;
     canvas.height = clientHeight;
     gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.bindTexture(gl.TEXTURE_2D, sceneColorTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.bindTexture(gl.TEXTURE_2D, sceneDepthTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, canvas.width, canvas.height, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sceneColorTex, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, sceneDepthTex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 }
 
@@ -937,7 +973,7 @@ function generateRoadSplines() {
 function applySplineRoadsToGrid() {
   roadSegments = roadPolylines.map((spline, idx) => {
     const isArterial = spline.isArterial;
-    const lanes = isArterial ? (Math.random() > 0.6 ? 3 : 2) : Math.random() > 0.7 ? 2 : 1;
+    const lanes = isArterial ? 2 : Math.random() > 0.6 ? 2 : 1;
     const sidewalk = isArterial ? randomRange(0.06, 0.14) : randomRange(0.04, 0.12);
     const baseSpeed = isArterial ? (Math.random() > 0.5 ? 50 : 40) : Math.random() > 0.5 ? 30 : 20;
     const speed = Math.max(20, baseSpeed - Math.round(sidewalk * 60));
@@ -1742,7 +1778,8 @@ function buildRoadRenderInstances() {
   const instances: number[] = [];
   roadSegments.forEach((segment) => {
     const points = segment.points;
-    const width = 0.35 + segment.lanes * 0.16 + segment.sidewalk * 2;
+    const laneCount = segment.lanes >= 2 ? 2 : 1;
+    const width = 0.35 + laneCount * 0.16 + segment.sidewalk * 2;
     const signal = segment.hasSignal ? 1 : 0;
     const crosswalk = segment.hasCrosswalk ? 1 : 0;
     const offsetSeed = Math.abs(Math.sin(segment.id * 12.9898) * 43758.5453);
@@ -1751,6 +1788,7 @@ function buildRoadRenderInstances() {
       const start = points[i];
       const end = points[i + 1];
       if (Math.hypot(end.x - start.x, end.z - start.z) < 0.01) continue;
+      const elevation = segment.isArterial ? 0.008 : 0.004;
       instances.push(
         start.x,
         start.z,
@@ -1758,12 +1796,12 @@ function buildRoadRenderInstances() {
         end.z,
         width,
         segment.sidewalk,
-        segment.lanes,
+        laneCount,
         segment.oneWay,
         signal,
         signalOffset,
         crosswalk,
-        0
+        elevation
       );
     }
   });
@@ -1819,6 +1857,12 @@ function buildBuffers() {
   gl.enableVertexAttribArray(3);
   gl.vertexAttribPointer(3, 4, gl.FLOAT, false, 48, 32);
   gl.vertexAttribDivisor(3, 1);
+  gl.bindVertexArray(null);
+
+  gl.bindVertexArray(postVao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
   gl.bindVertexArray(null);
 
   gl.bindVertexArray(buildingVao);
@@ -1924,6 +1968,7 @@ function updateTextures() {
 function render() {
   resizeCanvas();
   updateCamera();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFbo);
   gl.enable(gl.DEPTH_TEST);
   gl.clearColor(0.07, 0.09, 0.13, 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -1976,6 +2021,21 @@ function render() {
   gl.uniformMatrix4fv(uAgentViewProj, false, viewProj);
   gl.bindVertexArray(agentVao);
   gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, agents.length);
+  gl.bindVertexArray(null);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.disable(gl.DEPTH_TEST);
+  gl.useProgram(postProgram);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, sceneColorTex);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, sceneDepthTex);
+  gl.uniform1i(uPostScene, 0);
+  gl.uniform1i(uPostDepth, 1);
+  gl.uniform2f(uPostResolution, canvas.width, canvas.height);
+  gl.uniform1f(uPostFocus, 30.0);
+  gl.bindVertexArray(postVao);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
   gl.bindVertexArray(null);
 }
 
@@ -2452,6 +2512,33 @@ function signalAllowsMove(tileIndex: number, dir: number, type: AgentType) {
   return true;
 }
 
+function applyLaneOffset(position: { x: number; z: number }, from: number, to: number, agent: Agent) {
+  const dx = (to % GRID_WIDTH) - (from % GRID_WIDTH);
+  const dz = Math.floor(to / GRID_WIDTH) - Math.floor(from / GRID_WIDTH);
+  const length = Math.hypot(dx, dz) || 1;
+  const forward = { x: dx / length, z: dz / length };
+  const normal = { x: -forward.z, z: forward.x };
+  const lanes = tileLanes[from] >= 2 ? 2 : 1;
+  const sidewalkWidth = tileSidewalk[from] || 0;
+  let offset = 0;
+  if (agent.type === "pedestrian") {
+    const curb = 0.32 + sidewalkWidth * 2;
+    offset = curb * (agent.laneBias >= 0 ? 1 : -1);
+  } else if (agent.type === "scooter") {
+    offset = (0.18 + sidewalkWidth) * (agent.laneBias >= 0 ? 1 : -1);
+  } else {
+    if (lanes === 2) {
+      offset = 0.12 * (agent.laneBias >= 0 ? 1 : -1);
+    } else {
+      offset = 0;
+    }
+  }
+  return {
+    x: position.x + normal.x * offset,
+    z: position.z + normal.z * offset
+  };
+}
+
 function aStar(start: number, goal: number, type: AgentType) {
   const open: number[] = [start];
   const cameFrom = new Map<number, number>();
@@ -2549,7 +2636,8 @@ function spawnAgents() {
       pathIndex: 0,
       progress: 0,
       position: { x: startPos.x, z: startPos.z },
-      destination: endRoad
+      destination: endRoad,
+      laneBias: Math.random() > 0.5 ? 1 : -1
     });
   }
   console.log(`Spawned ${agents.length} agents (all have valid paths)`);
@@ -2559,7 +2647,7 @@ function agentSpeed(type: AgentType, tileIndex: number) {
   const sidewalk = tileSidewalk[tileIndex] || 0;
   const speedLimit = tileSpeed[tileIndex] || 30;
   if (type === "pedestrian") {
-    return 0.28 * (1 + sidewalk * 3);
+    return 0.3 * (1 + sidewalk * 3);
   }
   const base = type === "scooter" ? 0.7 : type === "car" ? 0.5 : 0.4;
   const limitFactor = speedLimit / 40;
@@ -2578,8 +2666,8 @@ function updateAgents(dt: number) {
     if (agent.type !== "pedestrian" && !signalAllowsMove(currentIndex, dir, agent.type)) {
       continue;
     }
-    const currentPos = tileCenter(currentIndex);
-    const nextPos = tileCenter(nextIndex);
+    const currentPos = applyLaneOffset(tileCenter(currentIndex), currentIndex, nextIndex, agent);
+    const nextPos = applyLaneOffset(tileCenter(nextIndex), currentIndex, nextIndex, agent);
     const speed = agentSpeed(agent.type, currentIndex) * dt;
     agent.progress += speed;
     if (agent.progress > 0.01) movedCount++;
