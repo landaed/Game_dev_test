@@ -1072,36 +1072,56 @@ function applySplineRoadsToGrid() {
 
 function detectIntersections() {
   intersections = [];
-  const intersectionThreshold = 1.5;
+  const mergeThreshold = 2.5; // Merge intersections within this distance
 
-  // Check all pairs of road segments for intersections
+  // Find actual crossing points between road segments
   for (let i = 0; i < roadSegments.length; i++) {
     for (let j = i + 1; j < roadSegments.length; j++) {
       const seg1 = roadSegments[i];
       const seg2 = roadSegments[j];
 
-      // Check if segments' point clouds are close enough
-      for (const p1 of seg1.points) {
-        for (const p2 of seg2.points) {
-          const dist = Math.hypot(p1.x - p2.x, p1.z - p2.z);
-          if (dist < intersectionThreshold) {
-            // Found an intersection point
-            const existingIntersection = intersections.find(
-              (int) => Math.hypot(int.position.x - p1.x, int.position.z - p1.z) < intersectionThreshold
-            );
+      // Check line segment intersections (not point cloud)
+      for (let p1 = 0; p1 < seg1.points.length - 1; p1++) {
+        for (let p2 = 0; p2 < seg2.points.length - 1; p2++) {
+          const a1 = seg1.points[p1];
+          const a2 = seg1.points[p1 + 1];
+          const b1 = seg2.points[p2];
+          const b2 = seg2.points[p2 + 1];
 
-            if (existingIntersection) {
-              // Add to existing intersection
-              if (!existingIntersection.connectedSegments.includes(i)) {
-                existingIntersection.connectedSegments.push(i);
+          // Calculate line intersection
+          const denom = (a1.x - a2.x) * (b1.z - b2.z) - (a1.z - a2.z) * (b1.x - b2.x);
+          if (Math.abs(denom) < 0.01) continue; // Parallel or nearly parallel
+
+          const t = ((a1.x - b1.x) * (b1.z - b2.z) - (a1.z - b1.z) * (b1.x - b2.x)) / denom;
+          const u = -((a1.x - a2.x) * (a1.z - b1.z) - (a1.z - a2.z) * (a1.x - b1.x)) / denom;
+
+          // Check if intersection is within both line segments
+          if (t >= -0.2 && t <= 1.2 && u >= -0.2 && u <= 1.2) {
+            const intX = a1.x + t * (a2.x - a1.x);
+            const intZ = a1.z + t * (a2.z - a1.z);
+
+            // Check if this intersection is close to an existing one
+            let merged = false;
+            for (const existing of intersections) {
+              const dist = Math.hypot(existing.position.x - intX, existing.position.z - intZ);
+              if (dist < mergeThreshold) {
+                // Merge into existing intersection
+                if (!existing.connectedSegments.includes(i)) {
+                  existing.connectedSegments.push(i);
+                }
+                if (!existing.connectedSegments.includes(j)) {
+                  existing.connectedSegments.push(j);
+                }
+                // Update position to average
+                existing.position.x = (existing.position.x + intX) / 2;
+                existing.position.z = (existing.position.z + intZ) / 2;
+                merged = true;
+                break;
               }
-              if (!existingIntersection.connectedSegments.includes(j)) {
-                existingIntersection.connectedSegments.push(j);
-              }
-            } else {
+            }
+
+            if (!merged) {
               // Create new intersection
-              const avgX = (p1.x + p2.x) / 2;
-              const avgZ = (p1.z + p2.z) / 2;
               const maxWidth = Math.max(
                 0.35 + seg1.lanes * 0.16 + seg1.sidewalk * 2,
                 0.35 + seg2.lanes * 0.16 + seg2.sidewalk * 2
@@ -1113,10 +1133,8 @@ function detectIntersections() {
               const rand = Math.random();
 
               if (isArterial) {
-                // Arterial roads get signals or roundabouts
                 intType = rand < 0.7 ? "signal" : "roundabout";
               } else {
-                // Secondary roads get variety
                 if (rand < 0.3) {
                   intType = "4way_stop";
                 } else if (rand < 0.5) {
@@ -1129,9 +1147,9 @@ function detectIntersections() {
               }
 
               intersections.push({
-                position: { x: avgX, z: avgZ },
+                position: { x: intX, z: intZ },
                 connectedSegments: [i, j],
-                size: maxWidth * 1.2,
+                size: maxWidth * 1.5,
                 hasSignal: intType === "signal",
                 type: intType
               });
@@ -1146,9 +1164,9 @@ function detectIntersections() {
   for (const intersection of intersections) {
     for (const segId of intersection.connectedSegments) {
       const segment = roadSegments[segId];
-      if (intersection.connectedSegments.length >= 3) {
+      if (intersection.connectedSegments.length >= 2) {
         segment.hasSignal = intersection.hasSignal;
-        segment.hasCrosswalk = true;
+        segment.hasCrosswalk = intersection.type !== "roundabout";
       }
     }
   }
@@ -1334,7 +1352,7 @@ function updateTrafficControls() {
     segment.hasSignal = false;
   });
 
-  // Map intersection types to tiles
+  // Map intersection types to tiles - only tiles very close to intersection center
   for (const intersection of intersections) {
     const pos = intersection.position;
     const typeMap: Record<IntersectionType, number> = {
@@ -1345,12 +1363,16 @@ function updateTrafficControls() {
     };
     const intTypeCode = typeMap[intersection.type];
 
-    // Find tiles near this intersection and mark them
+    // Only mark tiles within a small radius (actual intersection area)
+    const markRadius = intersection.size * 0.4; // Much tighter radius
+
     for (let i = 0; i < TILE_COUNT; i++) {
       if (tileType[i] !== 1) continue;
       const tilePos = tileCenter(i);
       const dist = Math.hypot(tilePos.x - pos.x, tilePos.z - pos.z);
-      if (dist < intersection.size * 0.8) {
+
+      // Only mark tiles that are actually inside the intersection
+      if (dist < markRadius) {
         tileIntersectionType[i] = intTypeCode;
 
         // Set appropriate flags based on intersection type
@@ -1358,26 +1380,28 @@ function updateTrafficControls() {
           tileSignal[i] = 1;
           tileCrosswalk[i] = tileSidewalk[i] > 0.02 ? 1 : 0;
         } else if (intersection.type === "roundabout") {
-          tileSignal[i] = 0; // No signals in roundabouts
+          tileSignal[i] = 0;
           tileCrosswalk[i] = 0;
         } else if (intersection.type === "4way_stop") {
-          tileSignal[i] = 0; // Use different logic for stop signs
+          tileSignal[i] = 0;
           tileCrosswalk[i] = tileSidewalk[i] > 0.02 ? 1 : 0;
         } else if (intersection.type === "yield") {
           tileSignal[i] = 0;
           tileCrosswalk[i] = 0;
         }
+
+        // Set signal offset for this tile
+        const offsetSeed = Math.abs(Math.sin(pos.x * 12.9898 + pos.z * 78.233) * 43758.5453);
+        tileSignalOffset[i] = offsetSeed - Math.floor(offsetSeed);
       }
     }
   }
 
-  // Handle signal offsets and sync to road segments
+  // Sync to road segments
   for (let i = 0; i < TILE_COUNT; i++) {
     if (tileType[i] !== 1) continue;
-    const offsetSeed = Math.abs(Math.sin(i * 12.9898) * 43758.5453);
-    tileSignalOffset[i] = offsetSeed - Math.floor(offsetSeed);
     const segId = tileRoadSegment[i];
-    if (segId >= 0) {
+    if (segId >= 0 && tileIntersectionType[i] > 0) {
       if (tileCrosswalk[i] > 0.5) roadSegments[segId].hasCrosswalk = true;
       if (tileSignal[i] > 0.5) roadSegments[segId].hasSignal = true;
     }
@@ -2372,11 +2396,11 @@ function render() {
   updateCamera();
   const focusDistance = calculateFocusDistance();
 
-  // Calculate rotating directional light (rotates slowly over time)
-  const lightAngle = state.time * 0.15; // Slow rotation
-  const lightDirX = Math.cos(lightAngle) * 0.5;
-  const lightDirY = 0.8; // Keep elevation constant
-  const lightDirZ = Math.sin(lightAngle) * 0.5;
+  // Calculate rotating directional light (rotates over time for visibility)
+  const lightAngle = state.time * 0.3; // Faster rotation to see effect
+  const lightDirX = Math.cos(lightAngle) * 0.7;
+  const lightDirY = 0.6; // Lower elevation for more dramatic lighting
+  const lightDirZ = Math.sin(lightAngle) * 0.7;
   const lightDirLen = Math.sqrt(lightDirX * lightDirX + lightDirY * lightDirY + lightDirZ * lightDirZ);
   const lightDir = [lightDirX / lightDirLen, lightDirY / lightDirLen, lightDirZ / lightDirLen];
 
@@ -3210,75 +3234,77 @@ function updateAgents(dt: number) {
       continue;
     }
 
-    // Calculate proposed new position
-    let proposedPos = { x: agent.position.x, z: agent.position.z };
+    // Calculate movement based on current speed
+    const speed = agentSpeed(agent.type, currentIndex) * dt;
 
     if (agent.splineSegment !== null && agent.splineSegment >= 0 && agent.splineSegment < roadSegments.length) {
-      const segment = roadSegments[agent.splineSegment];
-      const speed = agentSpeed(agent.type, currentIndex) * dt * 0.015;
-      const newProgress = agent.splineProgress + speed * agent.splineDirection;
+      // Spline-based movement
+      const splineSpeed = speed * 0.015;
+      const newProgress = agent.splineProgress + splineSpeed * agent.splineDirection;
 
       if (newProgress > 1.0 || newProgress < 0.0) {
+        // Reached end of spline, transition to next path tile
         const clampedProgress = Math.max(0, Math.min(1, newProgress));
-        const basePos = getSplinePosition(agent.splineSegment, clampedProgress);
-        proposedPos = applySplineLaneOffset(basePos, agent.splineSegment, clampedProgress, agent);
-
-        if (!checkCollision(agent, proposedPos)) {
-          agent.splineProgress = clampedProgress;
-          const currentPos = tileCenter(currentIndex);
-          agent.splineSegment = findNearestSplineSegment(currentPos, agent.type);
-          agent.splineProgress = 0;
-          agent.position.x = proposedPos.x;
-          agent.position.z = proposedPos.z;
-        }
+        agent.splineProgress = clampedProgress;
+        agent.progress += speed; // Use main progress counter for path advancement
       } else {
+        // Continue along spline
         const basePos = getSplinePosition(agent.splineSegment, newProgress);
-        proposedPos = applySplineLaneOffset(basePos, agent.splineSegment, newProgress, agent);
+        const proposedPos = applySplineLaneOffset(basePos, agent.splineSegment, newProgress, agent);
 
         if (!checkCollision(agent, proposedPos)) {
           agent.splineProgress = newProgress;
           agent.position.x = proposedPos.x;
           agent.position.z = proposedPos.z;
+          if (speed > 0.01) movedCount++;
         }
       }
     } else {
+      // Tile-based movement
       const currentPos = applyLaneOffset(tileCenter(currentIndex), currentIndex, nextIndex, agent);
       const nextPos = applyLaneOffset(tileCenter(nextIndex), currentIndex, nextIndex, agent);
-      const speed = agentSpeed(agent.type, currentIndex) * dt;
       const newProgress = agent.progress + speed;
-      if (newProgress > 0.01) movedCount++;
-      const t = newProgress;
-      proposedPos.x = currentPos.x + (nextPos.x - currentPos.x) * t;
-      proposedPos.z = currentPos.z + (nextPos.z - currentPos.z) * t;
+      const t = Math.min(newProgress, 1.0);
+      const proposedPos = {
+        x: currentPos.x + (nextPos.x - currentPos.x) * t,
+        z: currentPos.z + (nextPos.z - currentPos.z) * t
+      };
 
       if (!checkCollision(agent, proposedPos)) {
         agent.progress = newProgress;
         agent.position.x = proposedPos.x;
         agent.position.z = proposedPos.z;
+        if (speed > 0.01) movedCount++;
       }
     }
 
-    agent.progress += agentSpeed(agent.type, currentIndex) * dt;
-    if (agent.progress > 0.01) movedCount++;
+    // Advance to next tile in path
     if (agent.progress >= 1) {
       agent.pathIndex = Math.min(agent.pathIndex + 1, agent.path.length - 1);
       agent.progress = 0;
       const reachedIndex = agent.path[agent.pathIndex];
+
+      // Update spline segment for new tile
+      const newPos = tileCenter(reachedIndex);
+      agent.splineSegment = findNearestSplineSegment(newPos, agent.type);
+      agent.splineProgress = 0;
+
+      // If reached destination, find new one
       if (agent.pathIndex >= agent.path.length - 1) {
         const newEnd = randomTile(Math.random() > 0.6 ? 3 : 2);
         const newEndRoad = newEnd !== null ? findNearestRoad(newEnd, agent.type) : null;
         if (newEndRoad !== null) {
           agent.destination = newEndRoad;
           const newPath = aStar(reachedIndex, newEndRoad, agent.type);
-          if (newPath) {
+          if (newPath && newPath.length > 0) {
             agent.path = newPath;
             agent.pathIndex = 0;
             agent.progress = 0;
-            const snap = tileCenter(reachedIndex);
-            agent.position.x = snap.x;
-            agent.position.z = snap.z;
-            agent.splineSegment = findNearestSplineSegment(snap, agent.type);
-            agent.splineProgress = 0;
+            agent.position.x = newPos.x;
+            agent.position.z = newPos.z;
+          } else {
+            // If no path found, stay at current location and try again next frame
+            agent.progress = 0.9; // Almost at end, will retry soon
           }
         }
       }
@@ -3599,8 +3625,9 @@ canvas.addEventListener("mousemove", (event) => {
     const panSpeed = 0.1;
     const right = Math.cos(cameraAngle);
     const forward = -Math.sin(cameraAngle);
-    cameraPanX += (right * dx - forward * dy) * panSpeed;
-    cameraPanZ += (forward * dx + right * dy) * panSpeed;
+    // Inverted panning for natural drag behavior
+    cameraPanX -= (right * dx - forward * dy) * panSpeed;
+    cameraPanZ -= (forward * dx + right * dy) * panSpeed;
     lastMouseX = event.clientX;
     lastMouseY = event.clientY;
     console.log(`Pan: ${cameraPanX.toFixed(2)}, ${cameraPanZ.toFixed(2)}`);
