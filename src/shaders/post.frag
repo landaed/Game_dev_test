@@ -22,7 +22,8 @@ void main() {
   float depth = texture(u_depth, v_uv).r;
   float linearDepth = linearizeDepth(depth);
   float blurAmount = clamp(abs(linearDepth - u_focusDistance) / u_focusDistance, 0.0, 1.0);
-  float radius = mix(0.0, 6.0, blurAmount);
+  // Reduced blur radius from 6.0 to 2.5 for subtler depth of field
+  float radius = mix(0.0, 2.5, blurAmount);
 
   vec3 color = texture(u_scene, v_uv).rgb * 0.2;
   color += texture(u_scene, v_uv + texel * vec2(1.0, 0.0) * radius).rgb * 0.1;

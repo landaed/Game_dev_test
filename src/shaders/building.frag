@@ -106,6 +106,14 @@ void main() {
     color = mix(color, color * 0.90, windowFrame * floorMask * 0.3);
     color = mix(color, windowColor, windowInset * floorMask * 0.7);
 
+    // Add specular reflection to windows
+    vec3 viewDir = normalize(vec3(0.0, 0.3, 1.0));
+    vec3 reflectDir = reflect(-lightDir, normal);
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
+    // Apply specular highlights only on window areas
+    vec3 windowSpecular = vec3(0.95, 0.98, 1.0) * spec * windowInset * floorMask * 0.5;
+    color += windowSpecular;
+
     float doorHeight = step(v_local.y, 0.15);
     float doorMask = step(0.3, localUV.x) * step(localUV.x, 0.7) *
                      step(-0.5, localUV.y) * step(localUV.y, 0.5);
