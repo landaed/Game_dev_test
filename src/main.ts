@@ -375,9 +375,13 @@ type Agent = {
   position: { x: number; z: number };
   destination: number;
   laneBias: number;
+  splineSegment: number | null;
+  splineProgress: number;
+  splineDirection: number;
 };
 
 type RoadPoint = { x: number; z: number };
+type RoadWidth = "wide" | "medium" | "narrow";
 type RoadSegment = {
   id: number;
   tiles: number[];
@@ -389,20 +393,7 @@ type RoadSegment = {
   hasCrosswalk: boolean;
   hasSignal: boolean;
   oneWay: number;
-};
-
-type RoadPoint = { x: number; z: number };
-type RoadSegment = {
-  id: number;
-  tiles: number[];
-  points: RoadPoint[];
-  lanes: number;
-  sidewalk: number;
-  speed: number;
-  isArterial: boolean;
-  hasCrosswalk: boolean;
-  hasSignal: boolean;
-  oneWay: number;
+  roadWidth: RoadWidth;
 };
 
 const agents: Agent[] = [];
@@ -411,7 +402,7 @@ let selectedRoadSegment: number | null = null;
 let buildingInstanceCount = 0;
 let buildingInstances = new Float32Array(0);
 let roadSegments: RoadSegment[] = [];
-let roadPolylines: { points: RoadPoint[]; isArterial: boolean }[] = [];
+let roadPolylines: { points: RoadPoint[]; isArterial: boolean; roadWidth: RoadWidth }[] = [];
 let roadInstanceCount = 0;
 let roadInstances = new Float32Array(0);
 
@@ -941,7 +932,7 @@ function generateRoadSplines() {
       const y = clamp(baseY + wobble, 1, GRID_HEIGHT - 2);
       points.push({ x, z: y });
     }
-    roadPolylines.push({ points, isArterial: true });
+    roadPolylines.push({ points, isArterial: true, roadWidth: "wide" });
   }
 
   for (let i = 0; i < verticalCount; i++) {
@@ -953,18 +944,22 @@ function generateRoadSplines() {
       const x = clamp(baseX + wobble, 1, GRID_WIDTH - 2);
       points.push({ x, z: y });
     }
-    roadPolylines.push({ points, isArterial: true });
+    roadPolylines.push({ points, isArterial: true, roadWidth: "wide" });
   }
 
   for (let x = 2; x < GRID_WIDTH - 2; x += 6) {
     for (let y = 2; y < GRID_HEIGHT - 2; y += 6) {
       if (Math.random() < 0.5) {
         const endY = clamp(y + (Math.random() > 0.5 ? 4 : -4), 1, GRID_HEIGHT - 2);
-        roadPolylines.push({ points: [{ x, z: y }, { x, z: endY }], isArterial: false });
+        const rand = Math.random();
+        const roadWidth: RoadWidth = rand < 0.3 ? "narrow" : rand < 0.7 ? "medium" : "wide";
+        roadPolylines.push({ points: [{ x, z: y }, { x, z: endY }], isArterial: false, roadWidth });
       }
       if (Math.random() < 0.5) {
         const endX = clamp(x + (Math.random() > 0.5 ? 4 : -4), 1, GRID_WIDTH - 2);
-        roadPolylines.push({ points: [{ x, z: y }, { x: endX, z: y }], isArterial: false });
+        const rand = Math.random();
+        const roadWidth: RoadWidth = rand < 0.3 ? "narrow" : rand < 0.7 ? "medium" : "wide";
+        roadPolylines.push({ points: [{ x, z: y }, { x: endX, z: y }], isArterial: false, roadWidth });
       }
     }
   }
@@ -973,10 +968,27 @@ function generateRoadSplines() {
 function applySplineRoadsToGrid() {
   roadSegments = roadPolylines.map((spline, idx) => {
     const isArterial = spline.isArterial;
-    const lanes = isArterial ? 2 : Math.random() > 0.6 ? 2 : 1;
-    const sidewalk = isArterial ? randomRange(0.06, 0.14) : randomRange(0.04, 0.12);
-    const baseSpeed = isArterial ? (Math.random() > 0.5 ? 50 : 40) : Math.random() > 0.5 ? 30 : 20;
-    const speed = Math.max(20, baseSpeed - Math.round(sidewalk * 60));
+    const roadWidth = spline.roadWidth;
+
+    let lanes: number;
+    let sidewalk: number;
+    let baseSpeed: number;
+
+    if (roadWidth === "wide") {
+      lanes = 2;
+      sidewalk = randomRange(0.08, 0.14);
+      baseSpeed = isArterial ? 50 : 40;
+    } else if (roadWidth === "medium") {
+      lanes = 1;
+      sidewalk = randomRange(0.06, 0.10);
+      baseSpeed = 30;
+    } else {
+      lanes = 1;
+      sidewalk = randomRange(0.12, 0.20);
+      baseSpeed = 15;
+    }
+
+    const speed = Math.max(15, baseSpeed - Math.round(sidewalk * 30));
     return {
       id: idx,
       tiles: [],
@@ -987,7 +999,8 @@ function applySplineRoadsToGrid() {
       isArterial,
       hasCrosswalk: false,
       hasSignal: false,
-      oneWay: 0
+      oneWay: 0,
+      roadWidth
     };
   });
 
@@ -1965,9 +1978,74 @@ function updateTextures() {
   );
 }
 
+function calculateFocusDistance() {
+  const centerX = clamp(GRID_WIDTH * 0.5 + cameraPanX, 5, GRID_WIDTH - 5);
+  const centerZ = clamp(GRID_HEIGHT * 0.5 + cameraPanZ, 5, GRID_HEIGHT - 5);
+  const horizontalDist = cameraDistance * Math.cos(cameraTilt);
+  const eyeX = centerX + Math.sin(cameraAngle) * horizontalDist;
+  const eyeY = cameraDistance * Math.sin(cameraTilt);
+  const eyeZ = centerZ + Math.cos(cameraAngle) * horizontalDist;
+
+  const targetX = centerX;
+  const targetY = 0;
+  const targetZ = centerZ;
+
+  const dirX = targetX - eyeX;
+  const dirY = targetY - eyeY;
+  const dirZ = targetZ - eyeZ;
+  const dirLen = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
+  const rayDirX = dirX / dirLen;
+  const rayDirY = dirY / dirLen;
+  const rayDirZ = dirZ / dirLen;
+
+  let minDist = cameraDistance;
+
+  for (let t = 0; t < 100; t += 0.5) {
+    const px = eyeX + rayDirX * t;
+    const py = eyeY + rayDirY * t;
+    const pz = eyeZ + rayDirZ * t;
+
+    if (py <= 0.5) {
+      const dist = Math.sqrt((px - eyeX) ** 2 + (py - eyeY) ** 2 + (pz - eyeZ) ** 2);
+      minDist = Math.min(minDist, dist);
+      break;
+    }
+
+    const tileX = Math.floor(px);
+    const tileZ = Math.floor(pz);
+    if (tileX >= 0 && tileX < GRID_WIDTH && tileZ >= 0 && tileZ < GRID_HEIGHT) {
+      const idx = tileZ * GRID_WIDTH + tileX;
+      const type = tileType[idx];
+
+      if (type === 3 || type === 4) {
+        const height = type === 3 ? 2 + Math.random() * 2 : 4 + Math.random() * 4;
+        if (py <= height) {
+          const dist = Math.sqrt((px - eyeX) ** 2 + (py - eyeY) ** 2 + (pz - eyeZ) ** 2);
+          minDist = Math.min(minDist, dist);
+          break;
+        }
+      }
+    }
+
+    for (const agent of agents) {
+      const dx = px - agent.position.x;
+      const dz = pz - agent.position.z;
+      const agentDist = Math.sqrt(dx * dx + dz * dz);
+      if (agentDist < 0.3 && py <= 1.0) {
+        const dist = Math.sqrt((px - eyeX) ** 2 + (py - eyeY) ** 2 + (pz - eyeZ) ** 2);
+        minDist = Math.min(minDist, dist);
+        break;
+      }
+    }
+  }
+
+  return Math.max(5, Math.min(60, minDist));
+}
+
 function render() {
   resizeCanvas();
   updateCamera();
+  const focusDistance = calculateFocusDistance();
   gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFbo);
   gl.enable(gl.DEPTH_TEST);
   gl.clearColor(0.07, 0.09, 0.13, 1);
@@ -2033,7 +2111,7 @@ function render() {
   gl.uniform1i(uPostScene, 0);
   gl.uniform1i(uPostDepth, 1);
   gl.uniform2f(uPostResolution, canvas.width, canvas.height);
-  gl.uniform1f(uPostFocus, 30.0);
+  gl.uniform1f(uPostFocus, focusDistance);
   gl.bindVertexArray(postVao);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
   gl.bindVertexArray(null);
@@ -2512,6 +2590,50 @@ function signalAllowsMove(tileIndex: number, dir: number, type: AgentType) {
   return true;
 }
 
+function applySplineLaneOffset(position: { x: number; z: number }, segmentId: number, progress: number, agent: Agent) {
+  if (segmentId < 0 || segmentId >= roadSegments.length) return position;
+
+  const segment = roadSegments[segmentId];
+  const points = segment.points;
+  if (points.length < 2) return position;
+
+  const totalLength = points.length - 1;
+  const t = Math.max(0, Math.min(1, progress));
+  const index = Math.min(Math.floor(t * totalLength), totalLength - 1);
+
+  const p0 = points[index];
+  const p1 = points[Math.min(index + 1, points.length - 1)];
+
+  const dx = p1.x - p0.x;
+  const dz = p1.z - p0.z;
+  const length = Math.hypot(dx, dz) || 1;
+  const forward = { x: dx / length, z: dz / length };
+  const normal = { x: -forward.z, z: forward.x };
+
+  const lanes = segment.lanes;
+  const sidewalkWidth = segment.sidewalk;
+  let offset = 0;
+
+  if (agent.type === "pedestrian") {
+    const curb = 0.32 + sidewalkWidth * 2;
+    offset = curb * (agent.laneBias >= 0 ? 1 : -1);
+  } else if (agent.type === "scooter") {
+    const scooterOffset = 0.18 + sidewalkWidth;
+    offset = scooterOffset * (agent.splineDirection >= 0 ? -1 : 1);
+  } else {
+    if (lanes === 2) {
+      offset = 0.12 * (agent.splineDirection >= 0 ? -1 : 1);
+    } else {
+      offset = 0;
+    }
+  }
+
+  return {
+    x: position.x + normal.x * offset,
+    z: position.z + normal.z * offset
+  };
+}
+
 function applyLaneOffset(position: { x: number; z: number }, from: number, to: number, agent: Agent) {
   const dx = (to % GRID_WIDTH) - (from % GRID_WIDTH);
   const dz = Math.floor(to / GRID_WIDTH) - Math.floor(from / GRID_WIDTH);
@@ -2604,6 +2726,46 @@ function runTrips(count: number) {
   }
 }
 
+function findNearestSplineSegment(pos: { x: number; z: number }, type: AgentType) {
+  let nearestSegment = -1;
+  let minDist = Infinity;
+
+  for (let i = 0; i < roadSegments.length; i++) {
+    const segment = roadSegments[i];
+    if (segment.roadWidth === "narrow" && (type === "car" || type === "truck")) continue;
+
+    for (let p = 0; p < segment.points.length - 1; p++) {
+      const { dist } = distanceToSegment(pos, segment.points[p], segment.points[p + 1]);
+      if (dist < minDist) {
+        minDist = dist;
+        nearestSegment = i;
+      }
+    }
+  }
+
+  return nearestSegment;
+}
+
+function getSplinePosition(segmentId: number, progress: number) {
+  if (segmentId < 0 || segmentId >= roadSegments.length) return { x: 0, z: 0 };
+  const segment = roadSegments[segmentId];
+  const points = segment.points;
+  if (points.length === 0) return { x: 0, z: 0 };
+
+  const totalLength = points.length - 1;
+  const t = Math.max(0, Math.min(1, progress));
+  const index = Math.min(Math.floor(t * totalLength), totalLength - 1);
+  const localT = (t * totalLength) - index;
+
+  const p0 = points[index];
+  const p1 = points[Math.min(index + 1, points.length - 1)];
+
+  return {
+    x: p0.x + (p1.x - p0.x) * localT,
+    z: p0.z + (p1.z - p0.z) * localT
+  };
+}
+
 function spawnAgents() {
   agents.length = 0;
   const types: AgentType[] = ["pedestrian", "scooter", "car", "truck"];
@@ -2627,8 +2789,9 @@ function spawnAgents() {
     const endRoad = findNearestRoad(end, type);
     if (startRoad === null || endRoad === null) continue;
     const path = aStar(startRoad, endRoad, type);
-    if (!path || path.length === 0) continue; // Only spawn agents with valid paths
+    if (!path || path.length === 0) continue;
     const startPos = tileCenter(startRoad);
+    const splineSegment = findNearestSplineSegment(startPos, type);
     agents.push({
       id: i,
       type,
@@ -2637,7 +2800,10 @@ function spawnAgents() {
       progress: 0,
       position: { x: startPos.x, z: startPos.z },
       destination: endRoad,
-      laneBias: Math.random() > 0.5 ? 1 : -1
+      laneBias: Math.random() > 0.5 ? 1 : -1,
+      splineSegment,
+      splineProgress: 0,
+      splineDirection: 1
     });
   }
   console.log(`Spawned ${agents.length} agents (all have valid paths)`);
@@ -2666,10 +2832,35 @@ function updateAgents(dt: number) {
     if (agent.type !== "pedestrian" && !signalAllowsMove(currentIndex, dir, agent.type)) {
       continue;
     }
-    const currentPos = applyLaneOffset(tileCenter(currentIndex), currentIndex, nextIndex, agent);
-    const nextPos = applyLaneOffset(tileCenter(nextIndex), currentIndex, nextIndex, agent);
-    const speed = agentSpeed(agent.type, currentIndex) * dt;
-    agent.progress += speed;
+
+    if (agent.splineSegment !== null && agent.splineSegment >= 0 && agent.splineSegment < roadSegments.length) {
+      const segment = roadSegments[agent.splineSegment];
+      const speed = agentSpeed(agent.type, currentIndex) * dt * 0.015;
+      agent.splineProgress += speed * agent.splineDirection;
+
+      if (agent.splineProgress > 1.0 || agent.splineProgress < 0.0) {
+        agent.splineProgress = Math.max(0, Math.min(1, agent.splineProgress));
+        const currentPos = tileCenter(currentIndex);
+        agent.splineSegment = findNearestSplineSegment(currentPos, agent.type);
+        agent.splineProgress = 0;
+      }
+
+      const basePos = getSplinePosition(agent.splineSegment, agent.splineProgress);
+      const offsetPos = applySplineLaneOffset(basePos, agent.splineSegment, agent.splineProgress, agent);
+      agent.position.x = offsetPos.x;
+      agent.position.z = offsetPos.z;
+    } else {
+      const currentPos = applyLaneOffset(tileCenter(currentIndex), currentIndex, nextIndex, agent);
+      const nextPos = applyLaneOffset(tileCenter(nextIndex), currentIndex, nextIndex, agent);
+      const speed = agentSpeed(agent.type, currentIndex) * dt;
+      agent.progress += speed;
+      if (agent.progress > 0.01) movedCount++;
+      const t = agent.progress;
+      agent.position.x = currentPos.x + (nextPos.x - currentPos.x) * t;
+      agent.position.z = currentPos.z + (nextPos.z - currentPos.z) * t;
+    }
+
+    agent.progress += agentSpeed(agent.type, currentIndex) * dt;
     if (agent.progress > 0.01) movedCount++;
     if (agent.progress >= 1) {
       agent.pathIndex = Math.min(agent.pathIndex + 1, agent.path.length - 1);
@@ -2688,13 +2879,12 @@ function updateAgents(dt: number) {
             const snap = tileCenter(reachedIndex);
             agent.position.x = snap.x;
             agent.position.z = snap.z;
+            agent.splineSegment = findNearestSplineSegment(snap, agent.type);
+            agent.splineProgress = 0;
           }
         }
       }
     }
-    const t = agent.progress;
-    agent.position.x = currentPos.x + (nextPos.x - currentPos.x) * t;
-    agent.position.z = currentPos.z + (nextPos.z - currentPos.z) * t;
   }
   if (updateAgentDebugCounter++ % 60 === 0) {
     console.log(`updateAgents called. Agents: ${agents.length}, Moving: ${movedCount}, dt: ${dt.toFixed(4)}`);
