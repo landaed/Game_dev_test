@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sidewalk Savior: Taiwan Edition</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="hud" id="hud"></header>
+      <main class="game">
+        <aside class="panel left" id="left-panel"></aside>
+        <section class="canvas-wrap">
+          <canvas id="game-canvas"></canvas>
+        </section>
+        <aside class="panel right" id="right-panel"></aside>
+      </main>
+      <footer class="bottom-bar" id="bottom-bar"></footer>
+      <div class="modal" id="modal"></div>
+      <div class="toast" id="toast"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
