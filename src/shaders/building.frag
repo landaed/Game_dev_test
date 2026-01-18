@@ -17,12 +17,14 @@ float hash21(vec2 p) {
 }
 
 vec3 buildingBase(float type, float seed) {
-  if (type < 2.5) return mix(vec3(0.65, 0.58, 0.55), vec3(0.75, 0.65, 0.60), seed);
-  if (type < 3.5) return mix(vec3(0.55, 0.62, 0.70), vec3(0.65, 0.72, 0.82), seed);
-  if (type < 4.5) return mix(vec3(0.60, 0.58, 0.62), vec3(0.72, 0.65, 0.68), seed);
-  if (type < 5.5) return mix(vec3(0.58, 0.68, 0.58), vec3(0.68, 0.78, 0.68), seed);
-  if (type < 6.5) return mix(vec3(0.70, 0.65, 0.55), vec3(0.80, 0.75, 0.65), seed);
-  return mix(vec3(0.62, 0.55, 0.58), vec3(0.75, 0.65, 0.70), seed);
+  if (type < 2.5) return mix(vec3(0.65, 0.58, 0.55), vec3(0.75, 0.65, 0.60), seed);  // Residential
+  if (type < 3.5) return mix(vec3(0.55, 0.62, 0.70), vec3(0.65, 0.72, 0.82), seed);  // Commercial
+  if (type < 4.5) return mix(vec3(0.60, 0.58, 0.62), vec3(0.72, 0.65, 0.68), seed);  // Industrial
+  if (type < 5.5) return mix(vec3(0.58, 0.68, 0.58), vec3(0.68, 0.78, 0.68), seed);  // Park
+  if (type < 6.5) return mix(vec3(0.70, 0.65, 0.55), vec3(0.80, 0.75, 0.65), seed);  // School
+  if (type < 7.5) return mix(vec3(0.62, 0.55, 0.58), vec3(0.75, 0.65, 0.70), seed);  // Night Market
+  if (type < 8.5) return mix(vec3(0.78, 0.52, 0.42), vec3(0.88, 0.62, 0.48), seed);  // Temple (red/orange)
+  return mix(vec3(0.68, 0.72, 0.78), vec3(0.78, 0.82, 0.88), seed);  // Mall (bright, modern)
 }
 
 void main() {

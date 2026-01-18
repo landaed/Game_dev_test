@@ -11,7 +11,7 @@ npm run dev
 ## Controls
 - **Click** a tile to select it.
 - **Click** pedestrians/scooters/cars/trucks to inspect their routes.
-- **Left-click + Drag** to pan the camera around the city.
+- **Middle-click + Drag** to pan the camera around the city (screen-space panning).
 - **Right-click + Drag** to rotate the camera (orbital rotation).
 - **Scroll** with mouse wheel to zoom in and out.
 - **Left panel**: apply road actions or enact/repeal policies.

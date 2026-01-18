@@ -6,8 +6,62 @@ import agentVert from "./shaders/agent.vert?raw";
 import agentFrag from "./shaders/agent.frag?raw";
 import "./styles.css";
 
-type TileType = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type TileType = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 type AgentType = "pedestrian" | "scooter" | "car" | "truck";
+
+enum TileKind {
+  GRASS = 0,
+  ROAD = 1,
+  RESIDENTIAL = 2,
+  COMMERCIAL = 3,
+  INDUSTRIAL = 4,
+  PARK = 5,
+  SCHOOL = 6,
+  NIGHT_MARKET = 7,
+  TEMPLE = 8,
+  MALL = 9
+}
+
+interface WFCTile {
+  type: TileType;
+  connections: { north: boolean; east: boolean; south: boolean; west: boolean };
+  oneWay?: number;
+  weight: number;
+}
+
+const WFC_TILES: WFCTile[] = [
+  // Grass/open
+  { type: 0, connections: { north: false, east: false, south: false, west: false }, weight: 5 },
+  // Four-way intersection
+  { type: 1, connections: { north: true, east: true, south: true, west: true }, weight: 2 },
+  // T-junctions
+  { type: 1, connections: { north: true, east: true, south: true, west: false }, weight: 3 },
+  { type: 1, connections: { north: true, east: false, south: true, west: true }, weight: 3 },
+  { type: 1, connections: { north: true, east: true, south: false, west: true }, weight: 3 },
+  { type: 1, connections: { north: false, east: true, south: true, west: true }, weight: 3 },
+  // Straight roads
+  { type: 1, connections: { north: true, east: false, south: true, west: false }, weight: 10 },
+  { type: 1, connections: { north: false, east: true, south: false, west: true }, weight: 10 },
+  // Corners
+  { type: 1, connections: { north: true, east: true, south: false, west: false }, weight: 5 },
+  { type: 1, connections: { north: true, east: false, south: false, west: true }, weight: 5 },
+  { type: 1, connections: { north: false, east: true, south: true, west: false }, weight: 5 },
+  { type: 1, connections: { north: false, east: false, south: true, west: true }, weight: 5 },
+  // Dead ends
+  { type: 1, connections: { north: true, east: false, south: false, west: false }, weight: 1 },
+  { type: 1, connections: { north: false, east: true, south: false, west: false }, weight: 1 },
+  { type: 1, connections: { north: false, east: false, south: true, west: false }, weight: 1 },
+  { type: 1, connections: { north: false, east: false, south: false, west: true }, weight: 1 },
+  // Buildings - no road connections
+  { type: 2, connections: { north: false, east: false, south: false, west: false }, weight: 15 },
+  { type: 3, connections: { north: false, east: false, south: false, west: false }, weight: 12 },
+  { type: 4, connections: { north: false, east: false, south: false, west: false }, weight: 8 },
+  { type: 5, connections: { north: false, east: false, south: false, west: false }, weight: 4 },
+  { type: 6, connections: { north: false, east: false, south: false, west: false }, weight: 3 },
+  { type: 7, connections: { north: false, east: false, south: false, west: false }, weight: 3 },
+  { type: 8, connections: { north: false, east: false, south: false, west: false }, weight: 2 },
+  { type: 9, connections: { north: false, east: false, south: false, west: false }, weight: 2 },
+];
 
 class AudioEngine {
   private ctx: AudioContext | null = null;
@@ -644,9 +698,207 @@ function tileCenter(index: number) {
 }
 
 function resetTileIndex() {
-  [2, 3, 4, 5, 6, 7].forEach((type) => {
+  [2, 3, 4, 5, 6, 7, 8, 9].forEach((type) => {
     tileIndicesByType[type] = [];
   });
+}
+
+function tilesCompatible(tile1: WFCTile, tile2: WFCTile, direction: 'north' | 'east' | 'south' | 'west'): boolean {
+  const opposites = { north: 'south', east: 'west', south: 'north', west: 'east' } as const;
+  return tile1.connections[direction] === tile2.connections[opposites[direction]];
+}
+
+function generateMapWFC() {
+  resetTileIndex();
+
+  interface Cell {
+    possibilities: number[];
+    collapsed: boolean;
+  }
+
+  const grid: Cell[] = [];
+  for (let i = 0; i < TILE_COUNT; i++) {
+    grid[i] = {
+      possibilities: WFC_TILES.map((_, idx) => idx),
+      collapsed: false
+    };
+  }
+
+  function getNeighborIndices(idx: number) {
+    const x = idx % GRID_WIDTH;
+    const y = Math.floor(idx / GRID_WIDTH);
+    return {
+      north: y > 0 ? idx - GRID_WIDTH : null,
+      east: x < GRID_WIDTH - 1 ? idx + 1 : null,
+      south: y < GRID_HEIGHT - 1 ? idx + GRID_WIDTH : null,
+      west: x > 0 ? idx - 1 : null
+    };
+  }
+
+  function propagateConstraints(idx: number) {
+    const stack = [idx];
+    const visited = new Set<number>();
+
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+
+      const neighbors = getNeighborIndices(current);
+      const currentTile = grid[current];
+
+      for (const [dir, neighborIdx] of Object.entries(neighbors)) {
+        if (neighborIdx === null || grid[neighborIdx].collapsed) continue;
+
+        const validNeighbors = new Set<number>();
+        for (const possIdx of currentTile.possibilities) {
+          const tile = WFC_TILES[possIdx];
+          for (const neighPossIdx of grid[neighborIdx].possibilities) {
+            const neighTile = WFC_TILES[neighPossIdx];
+            if (tilesCompatible(tile, neighTile, dir as any)) {
+              validNeighbors.add(neighPossIdx);
+            }
+          }
+        }
+
+        const newPoss = [...validNeighbors];
+        if (newPoss.length < grid[neighborIdx].possibilities.length) {
+          grid[neighborIdx].possibilities = newPoss;
+          if (!stack.includes(neighborIdx)) {
+            stack.push(neighborIdx);
+          }
+        }
+      }
+    }
+  }
+
+  function collapse() {
+    let minEntropy = Infinity;
+    let minIdx = -1;
+
+    for (let i = 0; i < TILE_COUNT; i++) {
+      if (grid[i].collapsed) continue;
+      const entropy = grid[i].possibilities.length;
+      if (entropy < minEntropy && entropy > 0) {
+        minEntropy = entropy;
+        minIdx = i;
+      }
+    }
+
+    if (minIdx === -1) return false;
+
+    const cell = grid[minIdx];
+    const weights = cell.possibilities.map(idx => WFC_TILES[idx].weight);
+    const totalWeight = weights.reduce((a, b) => a + b, 0);
+    let random = Math.random() * totalWeight;
+    let chosenIdx = 0;
+
+    for (let i = 0; i < weights.length; i++) {
+      random -= weights[i];
+      if (random <= 0) {
+        chosenIdx = i;
+        break;
+      }
+    }
+
+    cell.possibilities = [cell.possibilities[chosenIdx]];
+    cell.collapsed = true;
+
+    propagateConstraints(minIdx);
+    return true;
+  }
+
+  // Seed with connected road grid to ensure connectivity
+  // Create horizontal road corridors
+  for (let y = 2; y < GRID_HEIGHT; y += 6) {
+    for (let x = 0; x < GRID_WIDTH; x++) {
+      const idx = indexFor(x, y);
+      // Force horizontal roads (straight E-W or intersections)
+      const horizontalRoads = [7, 1, 2, 4, 5]; // E-W straight, 4-way, T-junctions
+      grid[idx].possibilities = horizontalRoads;
+    }
+  }
+
+  // Create vertical road corridors
+  for (let x = 2; x < GRID_WIDTH; x += 5) {
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+      const idx = indexFor(x, y);
+      // Force vertical roads (straight N-S or intersections)
+      const verticalRoads = [6, 1, 2, 3, 5]; // N-S straight, 4-way, T-junctions
+      if (grid[idx].possibilities.length > 10) { // Only if not already constrained
+        grid[idx].possibilities = verticalRoads;
+      }
+    }
+  }
+
+  let iterations = 0;
+  while (collapse() && iterations++ < TILE_COUNT * 2) {
+    // Keep collapsing
+  }
+
+  // Fill in any uncollapsed cells
+  for (let i = 0; i < TILE_COUNT; i++) {
+    if (!grid[i].collapsed && grid[i].possibilities.length > 0) {
+      grid[i].possibilities = [grid[i].possibilities[Math.floor(Math.random() * grid[i].possibilities.length)]];
+      grid[i].collapsed = true;
+    } else if (grid[i].possibilities.length === 0) {
+      grid[i].possibilities = [0]; // Default to grass
+      grid[i].collapsed = true;
+    }
+  }
+
+  // Apply results to actual game grid
+  const typeCounts: Record<number, number> = {};
+  for (let i = 0; i < TILE_COUNT; i++) {
+    const wfcTile = WFC_TILES[grid[i].possibilities[0]];
+    tileType[i] = wfcTile.type;
+    typeCounts[wfcTile.type] = (typeCounts[wfcTile.type] || 0) + 1;
+
+    if (wfcTile.type === 1) {
+      tileLanes[i] = Math.random() > 0.5 ? 2 : 1;
+      tileSidewalk[i] = Math.random() > 0.85 ? (Math.random() > 0.5 ? 0.05 : 0.08) : 0.0;
+      const speedWeighted = Math.random();
+      if (speedWeighted < 0.15) {
+        tileSpeed[i] = 20;
+      } else if (speedWeighted < 0.35) {
+        tileSpeed[i] = 30;
+      } else if (speedWeighted < 0.7) {
+        tileSpeed[i] = 40;
+      } else {
+        tileSpeed[i] = 50;
+      }
+
+      // Determine one-way based on connections
+      const conn = wfcTile.connections;
+      const connectionCount = [conn.north, conn.east, conn.south, conn.west].filter(Boolean).length;
+      if (connectionCount <= 2 && Math.random() > 0.6) {
+        // One-way streets are more common on straight/corner roads
+        if (conn.north && !conn.south) tileOneWay[i] = 1;
+        else if (conn.east && !conn.west) tileOneWay[i] = 2;
+        else if (conn.south && !conn.north) tileOneWay[i] = 3;
+        else if (conn.west && !conn.east) tileOneWay[i] = 4;
+        else tileOneWay[i] = 0;
+      } else {
+        tileOneWay[i] = 0;
+      }
+
+      tilePedOnly[i] = 0;
+      tileScooterRestrict[i] = 0;
+      tileNoiseBarrier[i] = 0;
+    } else {
+      tileLanes[i] = 0;
+      tileSidewalk[i] = 0;
+      tileSpeed[i] = 0;
+      tileOneWay[i] = 0;
+      tilePedOnly[i] = 0;
+      tileScooterRestrict[i] = 0;
+      tileNoiseBarrier[i] = 0;
+      tileIndicesByType[wfcTile.type]?.push(i);
+    }
+  }
+
+  console.log('WFC generated tiles by type:', typeCounts);
+  console.log('tileIndicesByType counts:', Object.entries(tileIndicesByType).map(([k, v]) => `${k}: ${v.length}`).join(', '));
 }
 
 function rebuildTileIndex() {
@@ -658,49 +910,7 @@ function rebuildTileIndex() {
   }
 }
 
-function generateMap() {
-  resetTileIndex();
-
-  for (let y = 0; y < GRID_HEIGHT; y++) {
-    for (let x = 0; x < GRID_WIDTH; x++) {
-      const idx = indexFor(x, y);
-      const isRoad = x % 5 === 0 || y % 6 === 0 || (Math.random() > 0.92);
-      if (isRoad) {
-        tileType[idx] = 1;
-        tileLanes[idx] = Math.random() > 0.5 ? 2 : 1;
-        tileSidewalk[idx] = Math.random() > 0.85 ? (Math.random() > 0.5 ? 0.05 : 0.08) : 0.0;
-        const speedWeighted = Math.random();
-        if (speedWeighted < 0.15) {
-          tileSpeed[idx] = 20;
-        } else if (speedWeighted < 0.35) {
-          tileSpeed[idx] = 30;
-        } else if (speedWeighted < 0.7) {
-          tileSpeed[idx] = 40;
-        } else {
-          tileSpeed[idx] = 50;
-        }
-      } else {
-        const r = Math.random();
-        let type: TileType = 2;
-        if (r > 0.75) type = 3;
-        if (r > 0.88) type = 4;
-        if (r > 0.95) type = 5;
-        if (r > 0.975) type = 6;
-        if (r > 0.985) type = 7;
-        tileType[idx] = type;
-        tileLanes[idx] = 0;
-        tileSidewalk[idx] = 0;
-        tileSpeed[idx] = 0;
-        tileIndicesByType[type]?.push(idx);
-      }
-      tileOneWay[idx] = Math.random() > 0.55 ? Math.ceil(Math.random() * 4) : 0;
-      tilePedOnly[idx] = 0;
-      tileScooterRestrict[idx] = 0;
-      tileNoiseBarrier[idx] = 0;
-    }
-  }
-}
-generateMap();
+generateMapWFC();
 
 function buildBuildingInstances() {
   const instances: number[] = [];
@@ -1068,6 +1278,10 @@ function tileTypeName(type: number) {
       return "School";
     case 7:
       return "Night Market";
+    case 8:
+      return "Temple";
+    case 9:
+      return "Shopping Mall";
     default:
       return "Unknown";
   }
@@ -1330,7 +1544,8 @@ function spawnAgents() {
     const startRoad = findNearestRoad(start);
     const endRoad = findNearestRoad(end);
     if (startRoad === null || endRoad === null) continue;
-    const path = aStar(startRoad, endRoad) ?? [];
+    const path = aStar(startRoad, endRoad);
+    if (!path || path.length === 0) continue; // Only spawn agents with valid paths
     const startPos = tileCenter(startRoad);
     agents.push({
       id: i,
@@ -1342,6 +1557,7 @@ function spawnAgents() {
       destination: endRoad
     });
   }
+  console.log(`Spawned ${agents.length} agents (all have valid paths)`);
 }
 
 function agentSpeed(type: AgentType) {
@@ -1351,7 +1567,9 @@ function agentSpeed(type: AgentType) {
   return 0.4;
 }
 
+let updateAgentDebugCounter = 0;
 function updateAgents(dt: number) {
+  let movedCount = 0;
   for (const agent of agents) {
     if (agent.path.length === 0) continue;
     const currentIndex = agent.path[agent.pathIndex];
@@ -1360,6 +1578,7 @@ function updateAgents(dt: number) {
     const nextPos = tileCenter(nextIndex);
     const speed = agentSpeed(agent.type) * dt;
     agent.progress += speed;
+    if (agent.progress > 0.01) movedCount++;
     if (agent.progress >= 1) {
       agent.pathIndex = Math.min(agent.pathIndex + 1, agent.path.length - 1);
       agent.progress = 0;
@@ -1379,6 +1598,9 @@ function updateAgents(dt: number) {
     const t = agent.progress;
     agent.position.x = currentPos.x + (nextPos.x - currentPos.x) * t;
     agent.position.z = currentPos.z + (nextPos.z - currentPos.z) * t;
+  }
+  if (updateAgentDebugCounter++ % 60 === 0) {
+    console.log(`updateAgents called. Agents: ${agents.length}, Moving: ${movedCount}, dt: ${dt.toFixed(4)}`);
   }
 }
 
@@ -1651,10 +1873,11 @@ canvas.addEventListener("contextmenu", (event) => {
 });
 
 canvas.addEventListener("mousedown", (event) => {
-  if (event.button === 0) {
+  if (event.button === 1) {
     isDraggingPan = true;
     lastMouseX = event.clientX;
     lastMouseY = event.clientY;
+    event.preventDefault();
   } else if (event.button === 2) {
     isDraggingRotate = true;
     lastMouseX = event.clientX;
@@ -1666,8 +1889,11 @@ canvas.addEventListener("mousemove", (event) => {
   if (isDraggingPan) {
     const dx = event.clientX - lastMouseX;
     const dy = event.clientY - lastMouseY;
-    cameraPanX -= dx * 0.03;
-    cameraPanZ += dy * 0.03;
+    const panSpeed = 0.05;
+    const right = Math.cos(cameraAngle);
+    const forward = -Math.sin(cameraAngle);
+    cameraPanX += (right * dx - forward * dy) * panSpeed;
+    cameraPanZ += (forward * dx + right * dy) * panSpeed;
     lastMouseX = event.clientX;
     lastMouseY = event.clientY;
   } else if (isDraggingRotate) {
