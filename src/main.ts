@@ -40,8 +40,8 @@ const WFC_TILES: WFCTile[] = [
   { type: 1, connections: { north: true, east: true, south: false, west: true }, weight: 3 },
   { type: 1, connections: { north: false, east: true, south: true, west: true }, weight: 3 },
   // Straight roads
-  { type: 1, connections: { north: true, east: false, south: true, west: false }, weight: 10 },
-  { type: 1, connections: { north: false, east: true, south: false, west: true }, weight: 10 },
+  { type: 1, connections: { north: true, east: false, south: true, west: false }, weight: 4 },
+  { type: 1, connections: { north: false, east: true, south: false, west: true }, weight: 4 },
   // Corners
   { type: 1, connections: { north: true, east: true, south: false, west: false }, weight: 5 },
   { type: 1, connections: { north: true, east: false, south: false, west: true }, weight: 5 },
@@ -318,6 +318,7 @@ const rightPanel = document.getElementById("right-panel") as HTMLDivElement;
 const bottomBar = document.getElementById("bottom-bar") as HTMLDivElement;
 const modal = document.getElementById("modal") as HTMLDivElement;
 const toast = document.getElementById("toast") as HTMLDivElement;
+const compassNeedle = document.querySelector(".compass-needle") as HTMLDivElement | null;
 
 let viewMode = 0;
 let simSpeed = 1;
@@ -339,6 +340,7 @@ const tileLanes = new Float32Array(TILE_COUNT);
 const tileSidewalk = new Float32Array(TILE_COUNT);
 const tileSpeed = new Float32Array(TILE_COUNT);
 const tileOneWay = new Float32Array(TILE_COUNT);
+const tileDirMask = new Float32Array(TILE_COUNT);
 const tilePedOnly = new Float32Array(TILE_COUNT);
 const tileScooterRestrict = new Float32Array(TILE_COUNT);
 const tileNoiseBarrier = new Float32Array(TILE_COUNT);
@@ -353,6 +355,7 @@ const selection = new Float32Array(TILE_COUNT);
 const tileDataTexels = new Float32Array(TILE_COUNT * 4);
 const metrics0Texels = new Float32Array(TILE_COUNT * 4);
 const metrics1Texels = new Float32Array(TILE_COUNT * 4);
+const metrics2Texels = new Float32Array(TILE_COUNT * 4);
 
 type Agent = {
   id: number;
@@ -677,8 +680,9 @@ const uAgentViewProj = gl.getUniformLocation(agentProgram, "u_viewProj");
 const tileDataTex = gl.createTexture();
 const metrics0Tex = gl.createTexture();
 const metrics1Tex = gl.createTexture();
+const metrics2Tex = gl.createTexture();
 
-if (!tileDataTex || !metrics0Tex || !metrics1Tex) {
+if (!tileDataTex || !metrics0Tex || !metrics1Tex || !metrics2Tex) {
   throw new Error("Texture creation failed");
 }
 
@@ -696,6 +700,7 @@ function setupTexture(tex: WebGLTexture) {
 setupTexture(tileDataTex);
 setupTexture(metrics0Tex);
 setupTexture(metrics1Tex);
+setupTexture(metrics2Tex);
 
 function resizeCanvas() {
   const { clientWidth, clientHeight } = canvas;
@@ -726,6 +731,11 @@ function updateCamera() {
 
   audioEngine.updateListener(eyeX, eyeY, eyeZ, centerX, 0, centerZ);
   audioEngine.setGameVolume(cameraDistance);
+
+  if (compassNeedle) {
+    const heading = -cameraAngle * (180 / Math.PI);
+    compassNeedle.style.transform = `rotate(${heading}deg)`;
+  }
 }
 
 function projectToScreen(pos: { x: number; y: number; z: number }) {
@@ -754,7 +764,53 @@ function resetTileIndex() {
 
 function tilesCompatible(tile1: WFCTile, tile2: WFCTile, direction: 'north' | 'east' | 'south' | 'west'): boolean {
   const opposites = { north: 'south', east: 'west', south: 'north', west: 'east' } as const;
-  return tile1.connections[direction] === tile2.connections[opposites[direction]];
+  const opposite = opposites[direction];
+  const tile1Connects = tile1.connections[direction];
+  const tile2Connects = tile2.connections[opposite];
+
+  if (tile1.type === 1) {
+    if (tile1Connects) {
+      return tile2.type === 1 && tile2Connects;
+    }
+    return tile2.type !== 1;
+  }
+
+  if (tile2.type === 1) {
+    return !tile2Connects;
+  }
+
+  return tile1Connects === tile2Connects;
+}
+
+function connectionMask(connections: WFCTile["connections"]) {
+  let mask = 0;
+  if (connections.north) mask |= 1;
+  if (connections.east) mask |= 2;
+  if (connections.south) mask |= 4;
+  if (connections.west) mask |= 8;
+  return mask;
+}
+
+function deriveRoadMaskFromNeighbors() {
+  for (let y = 0; y < GRID_HEIGHT; y++) {
+    for (let x = 0; x < GRID_WIDTH; x++) {
+      const idx = indexFor(x, y);
+      if (tileType[idx] !== 1) {
+        tileDirMask[idx] = 0;
+        continue;
+      }
+      const north = y > 0 && tileType[indexFor(x, y - 1)] === 1;
+      const east = x < GRID_WIDTH - 1 && tileType[indexFor(x + 1, y)] === 1;
+      const south = y < GRID_HEIGHT - 1 && tileType[indexFor(x, y + 1)] === 1;
+      const west = x > 0 && tileType[indexFor(x - 1, y)] === 1;
+      let mask = 0;
+      if (north) mask |= 1;
+      if (east) mask |= 2;
+      if (south) mask |= 4;
+      if (west) mask |= 8;
+      tileDirMask[idx] = mask;
+    }
+  }
 }
 
 function generateMapSimple() {
@@ -785,6 +841,16 @@ function generateMapSimple() {
         }
       }
 
+      let mask = 0;
+      if (isVerticalRoad) {
+        mask |= 1;
+        mask |= 4;
+      }
+      if (isHorizontalRoad) {
+        mask |= 2;
+        mask |= 8;
+      }
+      tileDirMask[i] = mask;
       tilePedOnly[i] = 0;
       tileScooterRestrict[i] = 0;
       tileNoiseBarrier[i] = 0;
@@ -823,6 +889,7 @@ function generateMapSimple() {
       tileSidewalk[i] = 0;
       tileSpeed[i] = 0;
       tileOneWay[i] = 0;
+      tileDirMask[i] = 0;
       tilePedOnly[i] = 0;
       tileScooterRestrict[i] = 0;
       tileNoiseBarrier[i] = 0;
@@ -848,19 +915,19 @@ function generateMapWFC() {
   const corridorRows = new Set<number>();
   const corridorCols = new Set<number>();
   for (let y = 0; y < GRID_HEIGHT; y++) {
-    if (y % 6 === 2 && Math.random() > 0.35) {
+    if (y % 6 === 2 && Math.random() > 0.55) {
       corridorRows.add(y);
     }
   }
   for (let x = 0; x < GRID_WIDTH; x++) {
-    if (x % 5 === 2 && Math.random() > 0.4) {
+    if (x % 5 === 2 && Math.random() > 0.6) {
       corridorCols.add(x);
     }
   }
 
   const maxAttempts = 4;
-  const targetRoadRatio = 0.34;
-  const roadWeightAttempts = [0.55, 0.45, 0.38, 0.32];
+  const targetRoadRatio = 0.24;
+  const roadWeightAttempts = [0.35, 0.3, 0.26, 0.22];
   let finalGrid: Cell[] | null = null;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -910,18 +977,18 @@ function generateMapWFC() {
           const hasVertical = tile.connections.north || tile.connections.south;
           if (wantsHorizontal && !hasHorizontal) weight *= 0.1;
           if (wantsVertical && !hasVertical) weight *= 0.1;
-          if (wantsHorizontal && hasHorizontal) weight *= 1.6;
-          if (wantsVertical && hasVertical) weight *= 1.6;
+          if (wantsHorizontal && hasHorizontal) weight *= 1.2;
+          if (wantsVertical && hasVertical) weight *= 1.2;
         } else {
           weight *= 1.1;
         }
       } else if (isRoad) {
-        weight *= 0.35;
+        weight *= 0.2;
       }
       const x = idx % GRID_WIDTH;
       const y = Math.floor(idx / GRID_WIDTH);
       const edge = x === 0 || y === 0 || x === GRID_WIDTH - 1 || y === GRID_HEIGHT - 1;
-      if (edge && isRoad) weight *= 0.35;
+      if (edge && isRoad) weight *= 0.25;
       return weight;
     }
 
@@ -1047,6 +1114,7 @@ function generateMapWFC() {
       }
 
       tileOneWay[i] = 0;
+      tileDirMask[i] = connectionMask(wfcTile.connections);
       tilePedOnly[i] = 0;
       tileScooterRestrict[i] = 0;
       tileNoiseBarrier[i] = 0;
@@ -1055,6 +1123,7 @@ function generateMapWFC() {
       tileSidewalk[i] = 0;
       tileSpeed[i] = 0;
       tileOneWay[i] = 0;
+      tileDirMask[i] = 0;
       tilePedOnly[i] = 0;
       tileScooterRestrict[i] = 0;
       tileNoiseBarrier[i] = 0;
@@ -1176,11 +1245,17 @@ function buildBuildingInstances() {
           ? 2.0
           : tileType[i] === 4
             ? 1.6
-            : tileType[i] === 7
-              ? 1.2
-              : tileType[i] === 9
-                ? 2.4
-                : 0.8;
+            : tileType[i] === 5
+              ? 0.3
+              : tileType[i] === 6
+                ? 1.0
+                : tileType[i] === 7
+                  ? 0.6
+                  : tileType[i] === 8
+                    ? 1.1
+                    : tileType[i] === 9
+                      ? 2.2
+                      : 0.8;
     instances.push(x + 0.5, y + 0.5, height + (Math.sin(i) * 0.2 + 0.2), tileType[i]);
   }
   buildingInstances = new Float32Array(instances);
@@ -1260,6 +1335,11 @@ function updateTextures() {
     metrics1Texels[i * 4 + 1] = selection[i];
     metrics1Texels[i * 4 + 2] = tileOneWay[i];
     metrics1Texels[i * 4 + 3] = tilePedOnly[i];
+
+    metrics2Texels[i * 4] = tileDirMask[i];
+    metrics2Texels[i * 4 + 1] = 0;
+    metrics2Texels[i * 4 + 2] = 0;
+    metrics2Texels[i * 4 + 3] = 0;
   }
 
   gl.bindTexture(gl.TEXTURE_2D, tileDataTex);
@@ -1300,6 +1380,19 @@ function updateTextures() {
     gl.FLOAT,
     metrics1Texels
   );
+
+  gl.bindTexture(gl.TEXTURE_2D, metrics2Tex);
+  gl.texImage2D(
+    gl.TEXTURE_2D,
+    0,
+    gl.RGBA32F,
+    GRID_WIDTH,
+    GRID_HEIGHT,
+    0,
+    gl.RGBA,
+    gl.FLOAT,
+    metrics2Texels
+  );
 }
 
 function render() {
@@ -1320,13 +1413,17 @@ function render() {
   gl.bindTexture(gl.TEXTURE_2D, metrics0Tex);
   gl.activeTexture(gl.TEXTURE2);
   gl.bindTexture(gl.TEXTURE_2D, metrics1Tex);
+  gl.activeTexture(gl.TEXTURE3);
+  gl.bindTexture(gl.TEXTURE_2D, metrics2Tex);
 
   const uTileData = gl.getUniformLocation(groundProgram, "u_tileData");
   const uMetrics0 = gl.getUniformLocation(groundProgram, "u_metrics0");
   const uMetrics1 = gl.getUniformLocation(groundProgram, "u_metrics1");
+  const uMetrics2 = gl.getUniformLocation(groundProgram, "u_metrics2");
   gl.uniform1i(uTileData, 0);
   gl.uniform1i(uMetrics0, 1);
   gl.uniform1i(uMetrics1, 2);
+  gl.uniform1i(uMetrics2, 3);
 
   gl.bindVertexArray(groundVao);
   gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, TILE_COUNT);
@@ -1509,6 +1606,8 @@ function updateRightPanel() {
   }
   const type = tileType[selectedIndex];
   const name = tileTypeName(type);
+  const dirMask = Math.round(tileDirMask[selectedIndex] || 0);
+  const allowedDirs = type === 1 ? directionMaskName(dirMask) : "";
   rightPanel.innerHTML = `
     <h2>Selection</h2>
     <div class="card">
@@ -1517,7 +1616,8 @@ function updateRightPanel() {
       <div class="small">Ped ${(ped[selectedIndex] * 100).toFixed(0)} · Income ${(income[selectedIndex] * 100).toFixed(0)}</div>
       <div class="small">Speed ${tileSpeed[selectedIndex] || 0} · Sidewalk ${(tileSidewalk[selectedIndex] * 100).toFixed(0)}%</div>
     </div>
-    <div class="card small">One-way: ${tileOneWay[selectedIndex] ? directionName(tileOneWay[selectedIndex]) : "Two-way"}</div>
+    ${type === 1 ? `<div class="card small">Allowed: ${allowedDirs}</div>` : ""}
+    ${type === 1 ? `<div class="card small">One-way: ${tileOneWay[selectedIndex] ? directionName(tileOneWay[selectedIndex]) : "Two-way"}</div>` : ""}
   `;
 }
 
@@ -1554,6 +1654,16 @@ function directionName(value: number) {
   if (value === 3) return "Southbound";
   if (value === 4) return "Westbound";
   return "Two-way";
+}
+
+function directionMaskName(mask: number) {
+  if (!mask) return "None";
+  const dirs: string[] = [];
+  if (mask & 1) dirs.push("North");
+  if (mask & 2) dirs.push("East");
+  if (mask & 4) dirs.push("South");
+  if (mask & 8) dirs.push("West");
+  return dirs.join(" / ");
 }
 
 function formatMoney(value: number) {
@@ -1655,6 +1765,7 @@ function saveGame() {
     tileSidewalk: Array.from(tileSidewalk),
     tileSpeed: Array.from(tileSpeed),
     tileOneWay: Array.from(tileOneWay),
+    tileDirMask: Array.from(tileDirMask),
     tilePedOnly: Array.from(tilePedOnly),
     tileScooterRestrict: Array.from(tileScooterRestrict),
     tileNoiseBarrier: Array.from(tileNoiseBarrier),
@@ -1679,6 +1790,11 @@ function loadGame() {
   tileSidewalk.set(save.tileSidewalk);
   tileSpeed.set(save.tileSpeed);
   tileOneWay.set(save.tileOneWay);
+  if (save.tileDirMask) {
+    tileDirMask.set(save.tileDirMask);
+  } else {
+    deriveRoadMaskFromNeighbors();
+  }
   tilePedOnly.set(save.tilePedOnly);
   tileScooterRestrict.set(save.tileScooterRestrict);
   tileNoiseBarrier.set(save.tileNoiseBarrier);

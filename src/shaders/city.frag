@@ -4,6 +4,7 @@ precision highp float;
 uniform sampler2D u_tileData;
 uniform sampler2D u_metrics0;
 uniform sampler2D u_metrics1;
+uniform sampler2D u_metrics2;
 uniform vec2 u_grid;
 uniform float u_time;
 uniform int u_viewMode;
@@ -59,11 +60,17 @@ float arrowShape(vec2 uv) {
   return max(body, head);
 }
 
+bool isRoadTile(ivec2 coord) {
+  vec4 data = texelFetch(u_tileData, coord, 0);
+  return data.r > 0.5 && data.r < 1.5;
+}
+
 void main() {
   ivec2 coord = ivec2(v_tileCoord);
   vec4 tileData = texelFetch(u_tileData, coord, 0);
   vec4 metrics0 = texelFetch(u_metrics0, coord, 0);
   vec4 metrics1 = texelFetch(u_metrics1, coord, 0);
+  vec4 metrics2 = texelFetch(u_metrics2, coord, 0);
 
   float tileType = tileData.r;
   float lanes = tileData.g;
@@ -77,6 +84,7 @@ void main() {
   float happiness = metrics1.r;
   float selected = metrics1.g;
   float oneWay = metrics1.b;
+  float dirMask = metrics2.r;
 
   vec2 uv = v_uv;
   vec2 tileUv = (v_tileCoord + uv) / u_grid;
@@ -114,6 +122,19 @@ void main() {
     float crack = smoothstep(0.56, 0.64, fbm(tileUv * 42.0));
     color -= crack * (hasSidewalk ? 0.08 : 0.15);
 
+    float hasNorth = step(0.5, mod(floor(dirMask / 1.0), 2.0));
+    float hasEast = step(0.5, mod(floor(dirMask / 2.0), 2.0));
+    float hasSouth = step(0.5, mod(floor(dirMask / 4.0), 2.0));
+    float hasWest = step(0.5, mod(floor(dirMask / 8.0), 2.0));
+
+    float baseArrow = max(
+      max(arrowShape(uv) * hasNorth, arrowShape(vec2(uv.y, 1.0 - uv.x)) * hasEast),
+      max(arrowShape(vec2(1.0 - uv.x, 1.0 - uv.y)) * hasSouth, arrowShape(vec2(1.0 - uv.y, uv.x)) * hasWest)
+    );
+    if (!isOneWay) {
+      color = mix(color, vec3(0.8, 0.92, 1.0), baseArrow * 0.35);
+    }
+
     if (isOneWay) {
       vec2 arrowUv = uv;
       if (oneWay > 1.5 && oneWay < 2.5) {
@@ -125,6 +146,43 @@ void main() {
       }
       float arrow = arrowShape(arrowUv) * 0.6;
       color = mix(color, vec3(1.0, 0.96, 0.75), arrow);
+    } else {
+      bool hasLeft = coord.x > 0 && isRoadTile(coord + ivec2(-1, 0));
+      bool hasRight = coord.x < int(u_grid.x) - 1 && isRoadTile(coord + ivec2(1, 0));
+      bool hasUp = coord.y > 0 && isRoadTile(coord + ivec2(0, -1));
+      bool hasDown = coord.y < int(u_grid.y) - 1 && isRoadTile(coord + ivec2(0, 1));
+      bool hasHorizontal = hasLeft || hasRight;
+      bool hasVertical = hasUp || hasDown;
+      float arrowNorth = arrowShape(uv);
+      float arrowSouth = arrowShape(vec2(1.0 - uv.x, 1.0 - uv.y));
+      float arrowEast = arrowShape(vec2(uv.y, 1.0 - uv.x));
+      float arrowWest = arrowShape(vec2(1.0 - uv.y, uv.x));
+      float arrowMask = 0.0;
+      if (hasHorizontal && !hasVertical) {
+        arrowMask = max(arrowEast, arrowWest) * 0.6;
+      } else if (hasVertical && !hasHorizontal) {
+        arrowMask = max(arrowNorth, arrowSouth) * 0.6;
+      } else if (hasHorizontal && hasVertical) {
+        arrowMask = max(max(arrowEast, arrowWest), max(arrowNorth, arrowSouth)) * 0.4;
+      }
+      color = mix(color, vec3(0.75, 0.95, 1.0), arrowMask);
+    }
+
+    if (selected > 0.5) {
+      float animMaskValue = dirMask;
+      if (oneWay > 0.5) {
+        animMaskValue = oneWay < 1.5 ? 1.0 : oneWay < 2.5 ? 2.0 : oneWay < 3.5 ? 4.0 : 8.0;
+      }
+      float animNorth = step(0.5, mod(floor(animMaskValue / 1.0), 2.0));
+      float animEast = step(0.5, mod(floor(animMaskValue / 2.0), 2.0));
+      float animSouth = step(0.5, mod(floor(animMaskValue / 4.0), 2.0));
+      float animWest = step(0.5, mod(floor(animMaskValue / 8.0), 2.0));
+      float shift = u_time * 0.45;
+      float animArrow = max(
+        max(arrowShape(vec2(uv.x, fract(uv.y + shift))) * animNorth, arrowShape(vec2(fract(uv.y + shift), 1.0 - uv.x)) * animEast),
+        max(arrowShape(vec2(1.0 - uv.x, fract(1.0 - uv.y + shift))) * animSouth, arrowShape(vec2(fract(1.0 - uv.y + shift), uv.x)) * animWest)
+      );
+      color = mix(color, vec3(1.0, 0.85, 0.35), animArrow * 0.65);
     }
 
     if (hasSidewalk) {
