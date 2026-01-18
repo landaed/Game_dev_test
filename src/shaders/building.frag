@@ -6,6 +6,8 @@ in vec3 v_world;
 in float v_type;
 in float v_height;
 
+uniform vec3 u_lightDir;
+
 out vec4 outColor;
 
 float hash(vec2 p) {
@@ -42,8 +44,7 @@ void main() {
   }
 
   // Enhanced directional lighting with shadows
-  vec3 lightDir = normalize(vec3(0.5, 0.8, 0.3));
-  float faceDot = max(0.0, dot(normal, lightDir));
+  float faceDot = max(0.0, dot(normal, u_lightDir));
 
   // Ambient + diffuse lighting
   float ambient = 0.4;
@@ -108,7 +109,7 @@ void main() {
 
     // Add specular reflection to windows
     vec3 viewDir = normalize(vec3(0.0, 0.3, 1.0));
-    vec3 reflectDir = reflect(-lightDir, normal);
+    vec3 reflectDir = reflect(-u_lightDir, normal);
     float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
     // Apply specular highlights only on window areas
     vec3 windowSpecular = vec3(0.95, 0.98, 1.0) * spec * windowInset * floorMask * 0.5;
