@@ -2,6 +2,7 @@
 precision highp float;
 
 uniform float u_time;
+uniform vec3 u_lightDir;
 
 in vec2 v_local;
 in vec2 v_dir;
@@ -87,10 +88,9 @@ void main() {
     }
   }
 
-  // Add directional lighting (sun from top-right)
-  vec3 lightDir = normalize(vec3(0.5, 0.8, 0.3));
+  // Add directional lighting
   vec3 normal = vec3(0.0, 1.0, 0.0); // Road is flat
-  float lighting = 0.75 + max(0.0, dot(normal, lightDir)) * 0.25;
+  float lighting = 0.75 + max(0.0, dot(normal, u_lightDir)) * 0.25;
   color *= lighting;
 
   // Add noise-based reflections for wet road effect
@@ -99,7 +99,7 @@ void main() {
 
   // Specular reflection from light direction
   vec3 viewDir = normalize(vec3(0.0, 1.0, 0.0));
-  vec3 reflectDir = reflect(-lightDir, normal);
+  vec3 reflectDir = reflect(-u_lightDir, normal);
   float spec = pow(max(dot(viewDir, reflectDir), 0.0), 16.0);
 
   // Apply subtle specular highlights on asphalt (not sidewalk)

@@ -353,6 +353,7 @@ const roadClass = new Uint8Array(TILE_COUNT);
 const tileCrosswalk = new Float32Array(TILE_COUNT);
 const tileSignal = new Float32Array(TILE_COUNT);
 const tileSignalOffset = new Float32Array(TILE_COUNT);
+const tileIntersectionType = new Uint8Array(TILE_COUNT); // 0=none, 1=signal, 2=4way_stop, 3=roundabout, 4=yield
 
 const traffic = new Float32Array(TILE_COUNT);
 const noise = new Float32Array(TILE_COUNT);
@@ -396,11 +397,14 @@ type RoadSegment = {
   roadWidth: RoadWidth;
 };
 
+type IntersectionType = "signal" | "4way_stop" | "roundabout" | "yield";
+
 type Intersection = {
   position: { x: number; z: number };
   connectedSegments: number[];
   size: number;
   hasSignal: boolean;
+  type: IntersectionType;
 };
 
 const agents: Agent[] = [];
@@ -733,9 +737,12 @@ const uViewMode = gl.getUniformLocation(groundProgram, "u_viewMode");
 const uViewProj = gl.getUniformLocation(groundProgram, "u_viewProj");
 const uHideRoadTiles = gl.getUniformLocation(groundProgram, "u_hideRoadTiles");
 const uBuildingViewProj = gl.getUniformLocation(buildingProgram, "u_viewProj");
+const uBuildingLightDir = gl.getUniformLocation(buildingProgram, "u_lightDir");
 const uAgentViewProj = gl.getUniformLocation(agentProgram, "u_viewProj");
+const uAgentLightDir = gl.getUniformLocation(agentProgram, "u_lightDir");
 const uRoadViewProj = gl.getUniformLocation(roadProgram, "u_viewProj");
 const uRoadTime = gl.getUniformLocation(roadProgram, "u_time");
+const uRoadLightDir = gl.getUniformLocation(roadProgram, "u_lightDir");
 const uPostScene = gl.getUniformLocation(postProgram, "u_scene");
 const uPostDepth = gl.getUniformLocation(postProgram, "u_depth");
 const uPostResolution = gl.getUniformLocation(postProgram, "u_resolution");
@@ -928,20 +935,19 @@ function generateRoadSplines() {
 
   const horizontalCount = 3;
   const verticalCount = 3;
-  const baseAmplitude = 2.4;
+  const baseAmplitude = 1.8; // Reduced from 2.4 for tighter curves
   const phaseSeed = Math.random() * Math.PI * 2;
 
-  // Improved arterial roads with more organic curves
+  // Arterial roads with controlled organic curves
   for (let i = 0; i < horizontalCount; i++) {
     const baseY = Math.round(((i + 1) * GRID_HEIGHT) / (horizontalCount + 1));
     const phase = phaseSeed + i * 1.7;
-    const amplitude = baseAmplitude * (0.8 + Math.random() * 0.4); // Vary amplitude per road
+    const amplitude = baseAmplitude * (0.9 + Math.random() * 0.2); // Reduced variation
     const points: RoadPoint[] = [];
     for (let x = 0; x < GRID_WIDTH; x++) {
-      // Add secondary frequency for more natural curves
-      const wobble = Math.sin((x / GRID_WIDTH) * Math.PI * 2 + phase) * amplitude +
-                     Math.sin((x / GRID_WIDTH) * Math.PI * 4.5 + phase * 0.7) * (amplitude * 0.3);
-      const y = clamp(baseY + wobble, 1, GRID_HEIGHT - 2);
+      // Single frequency with small variation
+      const wobble = Math.sin((x / GRID_WIDTH) * Math.PI * 2 + phase) * amplitude;
+      const y = clamp(baseY + wobble, 2, GRID_HEIGHT - 3);
       points.push({ x, z: y });
     }
     roadPolylines.push({ points, isArterial: true, roadWidth: "wide" });
@@ -950,54 +956,43 @@ function generateRoadSplines() {
   for (let i = 0; i < verticalCount; i++) {
     const baseX = Math.round(((i + 1) * GRID_WIDTH) / (verticalCount + 1));
     const phase = phaseSeed + i * 1.9;
-    const amplitude = baseAmplitude * (0.8 + Math.random() * 0.4);
+    const amplitude = baseAmplitude * (0.9 + Math.random() * 0.2);
     const points: RoadPoint[] = [];
     for (let y = 0; y < GRID_HEIGHT; y++) {
-      const wobble = Math.sin((y / GRID_HEIGHT) * Math.PI * 2 + phase) * amplitude +
-                     Math.sin((y / GRID_HEIGHT) * Math.PI * 4.5 + phase * 0.7) * (amplitude * 0.3);
-      const x = clamp(baseX + wobble, 1, GRID_WIDTH - 2);
+      const wobble = Math.sin((y / GRID_HEIGHT) * Math.PI * 2 + phase) * amplitude;
+      const x = clamp(baseX + wobble, 2, GRID_WIDTH - 3);
       points.push({ x, z: y });
     }
     roadPolylines.push({ points, isArterial: true, roadWidth: "wide" });
   }
 
-  // Improved secondary roads with more organic curves and varied lengths
-  for (let x = 2; x < GRID_WIDTH - 2; x += 6) {
-    for (let y = 2; y < GRID_HEIGHT - 2; y += 6) {
-      if (Math.random() < 0.5) {
-        const length = 4 + Math.floor(Math.random() * 8); // Varied length: 4-11 tiles
-        const endY = clamp(y + (Math.random() > 0.5 ? length : -length), 1, GRID_HEIGHT - 2);
+  // Reduced secondary roads - simpler and fewer
+  for (let x = 4; x < GRID_WIDTH - 4; x += 8) {
+    for (let y = 4; y < GRID_HEIGHT - 4; y += 8) {
+      // Reduced probability from 0.5 to 0.3 for each direction
+      if (Math.random() < 0.3) {
+        const length = 6 + Math.floor(Math.random() * 6); // Length: 6-11 tiles
+        const endY = clamp(y + (Math.random() > 0.5 ? length : -length), 3, GRID_HEIGHT - 4);
         const rand = Math.random();
-        const roadWidth: RoadWidth = rand < 0.3 ? "narrow" : rand < 0.7 ? "medium" : "wide";
+        const roadWidth: RoadWidth = rand < 0.4 ? "narrow" : rand < 0.8 ? "medium" : "wide";
 
-        // Add slight curve to vertical roads
-        const points: RoadPoint[] = [];
-        const segments = Math.abs(endY - y);
-        for (let i = 0; i <= segments; i++) {
-          const t = i / segments;
-          const currentY = y + (endY - y) * t;
-          const curveOffset = Math.sin(t * Math.PI) * (1.2 + Math.random() * 0.8);
-          const currentX = x + curveOffset;
-          points.push({ x: clamp(currentX, 1, GRID_WIDTH - 2), z: currentY });
-        }
+        // Simpler, straighter roads
+        const points: RoadPoint[] = [
+          { x, z: y },
+          { x, z: endY }
+        ];
         roadPolylines.push({ points, isArterial: false, roadWidth });
       }
-      if (Math.random() < 0.5) {
-        const length = 4 + Math.floor(Math.random() * 8);
-        const endX = clamp(x + (Math.random() > 0.5 ? length : -length), 1, GRID_WIDTH - 2);
+      if (Math.random() < 0.3) {
+        const length = 6 + Math.floor(Math.random() * 6);
+        const endX = clamp(x + (Math.random() > 0.5 ? length : -length), 3, GRID_WIDTH - 4);
         const rand = Math.random();
-        const roadWidth: RoadWidth = rand < 0.3 ? "narrow" : rand < 0.7 ? "medium" : "wide";
+        const roadWidth: RoadWidth = rand < 0.4 ? "narrow" : rand < 0.8 ? "medium" : "wide";
 
-        // Add slight curve to horizontal roads
-        const points: RoadPoint[] = [];
-        const segments = Math.abs(endX - x);
-        for (let i = 0; i <= segments; i++) {
-          const t = i / segments;
-          const currentX = x + (endX - x) * t;
-          const curveOffset = Math.sin(t * Math.PI) * (1.2 + Math.random() * 0.8);
-          const currentY = y + curveOffset;
-          points.push({ x: currentX, z: clamp(currentY, 1, GRID_HEIGHT - 2) });
-        }
+        const points: RoadPoint[] = [
+          { x, z: y },
+          { x: endX, z: y }
+        ];
         roadPolylines.push({ points, isArterial: false, roadWidth });
       }
     }
@@ -1111,11 +1106,34 @@ function detectIntersections() {
                 0.35 + seg1.lanes * 0.16 + seg1.sidewalk * 2,
                 0.35 + seg2.lanes * 0.16 + seg2.sidewalk * 2
               );
+
+              // Determine intersection type based on road characteristics
+              const isArterial = seg1.isArterial || seg2.isArterial;
+              let intType: IntersectionType;
+              const rand = Math.random();
+
+              if (isArterial) {
+                // Arterial roads get signals or roundabouts
+                intType = rand < 0.7 ? "signal" : "roundabout";
+              } else {
+                // Secondary roads get variety
+                if (rand < 0.3) {
+                  intType = "4way_stop";
+                } else if (rand < 0.5) {
+                  intType = "roundabout";
+                } else if (rand < 0.7) {
+                  intType = "yield";
+                } else {
+                  intType = "signal";
+                }
+              }
+
               intersections.push({
                 position: { x: avgX, z: avgZ },
                 connectedSegments: [i, j],
                 size: maxWidth * 1.2,
-                hasSignal: seg1.isArterial || seg2.isArterial
+                hasSignal: intType === "signal",
+                type: intType
               });
             }
           }
@@ -1310,22 +1328,52 @@ function updateTrafficControls() {
   tileCrosswalk.fill(0);
   tileSignal.fill(0);
   tileSignalOffset.fill(0);
+  tileIntersectionType.fill(0);
   roadSegments.forEach((segment) => {
     segment.hasCrosswalk = false;
     segment.hasSignal = false;
   });
 
+  // Map intersection types to tiles
+  for (const intersection of intersections) {
+    const pos = intersection.position;
+    const typeMap: Record<IntersectionType, number> = {
+      signal: 1,
+      "4way_stop": 2,
+      roundabout: 3,
+      yield: 4
+    };
+    const intTypeCode = typeMap[intersection.type];
+
+    // Find tiles near this intersection and mark them
+    for (let i = 0; i < TILE_COUNT; i++) {
+      if (tileType[i] !== 1) continue;
+      const tilePos = tileCenter(i);
+      const dist = Math.hypot(tilePos.x - pos.x, tilePos.z - pos.z);
+      if (dist < intersection.size * 0.8) {
+        tileIntersectionType[i] = intTypeCode;
+
+        // Set appropriate flags based on intersection type
+        if (intersection.type === "signal") {
+          tileSignal[i] = 1;
+          tileCrosswalk[i] = tileSidewalk[i] > 0.02 ? 1 : 0;
+        } else if (intersection.type === "roundabout") {
+          tileSignal[i] = 0; // No signals in roundabouts
+          tileCrosswalk[i] = 0;
+        } else if (intersection.type === "4way_stop") {
+          tileSignal[i] = 0; // Use different logic for stop signs
+          tileCrosswalk[i] = tileSidewalk[i] > 0.02 ? 1 : 0;
+        } else if (intersection.type === "yield") {
+          tileSignal[i] = 0;
+          tileCrosswalk[i] = 0;
+        }
+      }
+    }
+  }
+
+  // Handle signal offsets and sync to road segments
   for (let i = 0; i < TILE_COUNT; i++) {
     if (tileType[i] !== 1) continue;
-    const mask = Math.round(tileDirMask[i] || 0);
-    const connections = ((mask & 1) > 0 ? 1 : 0) + ((mask & 2) > 0 ? 1 : 0) + ((mask & 4) > 0 ? 1 : 0) + ((mask & 8) > 0 ? 1 : 0);
-    const hasSidewalk = tileSidewalk[i] > 0.02;
-    if (connections >= 3) {
-      tileSignal[i] = 1;
-      tileCrosswalk[i] = hasSidewalk ? 1 : 0;
-    } else if (connections === 2 && hasSidewalk && Math.random() < 0.12) {
-      tileCrosswalk[i] = 1;
-    }
     const offsetSeed = Math.abs(Math.sin(i * 12.9898) * 43758.5453);
     tileSignalOffset[i] = offsetSeed - Math.floor(offsetSeed);
     const segId = tileRoadSegment[i];
@@ -1889,7 +1937,7 @@ function buildBuildingInstances() {
 }
 
 function addBuildingAccessSplines() {
-  // Add thin aesthetic splines from buildings to adjacent roads
+  // Add thin straight paths from buildings to adjacent roads (aesthetic only)
   for (let i = 0; i < TILE_COUNT; i++) {
     const type = tileType[i];
     if (type <= 1 || type === 5) continue; // Skip non-buildings and parks
@@ -1913,18 +1961,16 @@ function addBuildingAccessSplines() {
 
       const neighborIdx = nz * GRID_WIDTH + nx;
       if (tileType[neighborIdx] === 1) {
-        // Adjacent to a road, create a thin access spline
+        // Adjacent to a road, create a simple straight path
         const roadPos = tileCenter(neighborIdx);
 
-        // Improved path with smoother connection - starts further from building, ends closer to road center
-        const startOffset = 0.35; // Start further from building edge
-        const endOffset = 0.05; // End very close to road center
-        const controlOffset = 0.25; // Control point for curve
+        // Simple 2-point straight line from building edge to road edge
+        const buildingEdge = 0.45; // Start at building tile edge
+        const roadEdge = 0.45; // End at road tile edge
 
         const points: RoadPoint[] = [
-          { x: buildingPos.x + dir.dx * startOffset, z: buildingPos.z + dir.dz * startOffset },
-          { x: buildingPos.x + dir.dx * controlOffset + roadPos.x - dir.dx * controlOffset, z: buildingPos.z + dir.dz * controlOffset + roadPos.z - dir.dz * controlOffset },
-          { x: roadPos.x - dir.dx * endOffset, z: roadPos.z - dir.dz * endOffset }
+          { x: buildingPos.x + dir.dx * buildingEdge, z: buildingPos.z + dir.dz * buildingEdge },
+          { x: roadPos.x - dir.dx * roadEdge, z: roadPos.z - dir.dz * roadEdge }
         ];
 
         roadPolylines.push({
@@ -1936,7 +1982,7 @@ function addBuildingAccessSplines() {
     }
   }
 
-  // Rebuild road segments to include the new access splines
+  // Rebuild road segments to include the new access paths
   const newAccessSegments = roadPolylines.slice(roadSegments.length).map((spline, idx) => {
     const id = roadSegments.length + idx;
     return {
@@ -1944,7 +1990,7 @@ function addBuildingAccessSplines() {
       tiles: [],
       points: spline.points,
       lanes: 1,
-      sidewalk: 0.15,
+      sidewalk: 0.08,
       speed: 10,
       isArterial: false,
       hasCrosswalk: false,
@@ -1960,40 +2006,74 @@ function addBuildingAccessSplines() {
 function buildRoadRenderInstances() {
   const instances: number[] = [];
 
-  // First, render intersection boxes
+  // Render intersections based on type
   for (const intersection of intersections) {
     const size = intersection.size;
-    const halfSize = size / 2;
     const pos = intersection.position;
     const signal = intersection.hasSignal ? 1 : 0;
     const offsetSeed = Math.abs(Math.sin(pos.x * 12.9898 + pos.z * 78.233) * 43758.5453);
     const signalOffset = offsetSeed - Math.floor(offsetSeed);
 
-    // Create 4 edges of the intersection box
-    const corners = [
-      { x: pos.x - halfSize, z: pos.z - halfSize },
-      { x: pos.x + halfSize, z: pos.z - halfSize },
-      { x: pos.x + halfSize, z: pos.z + halfSize },
-      { x: pos.x - halfSize, z: pos.z + halfSize }
-    ];
-
-    for (let i = 0; i < 4; i++) {
-      const start = corners[i];
-      const end = corners[(i + 1) % 4];
-      instances.push(
-        start.x,
-        start.z,
-        end.x,
-        end.z,
-        size,
-        0.05,
-        2,
-        0,
-        signal,
-        signalOffset,
-        1,
-        0.01
-      );
+    if (intersection.type === "roundabout") {
+      // Render circular roundabout with multiple segments
+      const radius = size * 0.5;
+      const segments = 16;
+      for (let i = 0; i < segments; i++) {
+        const angle1 = (i / segments) * Math.PI * 2;
+        const angle2 = ((i + 1) / segments) * Math.PI * 2;
+        const start = {
+          x: pos.x + Math.cos(angle1) * radius,
+          z: pos.z + Math.sin(angle1) * radius
+        };
+        const end = {
+          x: pos.x + Math.cos(angle2) * radius,
+          z: pos.z + Math.sin(angle2) * radius
+        };
+        instances.push(
+          start.x,
+          start.z,
+          end.x,
+          end.z,
+          size * 0.4,
+          0.08,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0.01
+        );
+      }
+    } else {
+      // Regular intersection (signal, 4-way stop, yield) - use octagonal shape for softer edges
+      const numSides = 8;
+      const radius = size * 0.5;
+      for (let i = 0; i < numSides; i++) {
+        const angle1 = (i / numSides) * Math.PI * 2;
+        const angle2 = ((i + 1) / numSides) * Math.PI * 2;
+        const start = {
+          x: pos.x + Math.cos(angle1) * radius,
+          z: pos.z + Math.sin(angle1) * radius
+        };
+        const end = {
+          x: pos.x + Math.cos(angle2) * radius,
+          z: pos.z + Math.sin(angle2) * radius
+        };
+        instances.push(
+          start.x,
+          start.z,
+          end.x,
+          end.z,
+          size,
+          0.05,
+          2,
+          0,
+          signal,
+          signalOffset,
+          intersection.type === "4way_stop" ? 1 : 0,
+          0.01
+        );
+      }
     }
   }
 
@@ -2291,6 +2371,15 @@ function render() {
   resizeCanvas();
   updateCamera();
   const focusDistance = calculateFocusDistance();
+
+  // Calculate rotating directional light (rotates slowly over time)
+  const lightAngle = state.time * 0.15; // Slow rotation
+  const lightDirX = Math.cos(lightAngle) * 0.5;
+  const lightDirY = 0.8; // Keep elevation constant
+  const lightDirZ = Math.sin(lightAngle) * 0.5;
+  const lightDirLen = Math.sqrt(lightDirX * lightDirX + lightDirY * lightDirY + lightDirZ * lightDirZ);
+  const lightDir = [lightDirX / lightDirLen, lightDirY / lightDirLen, lightDirZ / lightDirLen];
+
   gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFbo);
   gl.enable(gl.DEPTH_TEST);
   gl.clearColor(0.07, 0.09, 0.13, 1);
@@ -2327,6 +2416,7 @@ function render() {
   gl.useProgram(roadProgram);
   gl.uniformMatrix4fv(uRoadViewProj, false, viewProj);
   gl.uniform1f(uRoadTime, state.time);
+  gl.uniform3fv(uRoadLightDir, lightDir);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.bindVertexArray(roadVao);
@@ -2336,12 +2426,14 @@ function render() {
 
   gl.useProgram(buildingProgram);
   gl.uniformMatrix4fv(uBuildingViewProj, false, viewProj);
+  gl.uniform3fv(uBuildingLightDir, lightDir);
   gl.bindVertexArray(buildingVao);
   gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, buildingInstanceCount);
   gl.bindVertexArray(null);
 
   gl.useProgram(agentProgram);
   gl.uniformMatrix4fv(uAgentViewProj, false, viewProj);
+  gl.uniform3fv(uAgentLightDir, lightDir);
   gl.bindVertexArray(agentVao);
   gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, agents.length);
   gl.bindVertexArray(null);
@@ -2825,6 +2917,26 @@ function movementDir(from: number, to: number) {
 
 function signalAllowsMove(tileIndex: number, dir: number, type: AgentType) {
   if (type === "pedestrian") return true;
+
+  const intType = tileIntersectionType[tileIndex];
+
+  // Roundabouts - always allow (yield to traffic already in roundabout would be complex)
+  if (intType === 3) return true;
+
+  // Yield signs - allow most of the time (simple yield logic)
+  if (intType === 4) {
+    // Random chance to yield briefly
+    return Math.random() > 0.1;
+  }
+
+  // 4-way stops - brief pause logic (stop for vehicles)
+  if (intType === 2) {
+    // Create a pseudo-random stop pattern based on tile and time
+    const stopPhase = (state.time * 2 + tileIndex * 0.1) % 1;
+    return stopPhase > 0.3; // Stop 30% of the time for brief pause
+  }
+
+  // Traffic signals - traditional signal logic
   if (tileSignal[tileIndex] < 0.5) return true;
   const phase = (state.time / 6 + tileSignalOffset[tileIndex]) % 1;
   const northSouthGreen = phase < 0.5;

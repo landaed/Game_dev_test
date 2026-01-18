@@ -4,6 +4,8 @@ precision highp float;
 in float v_type;
 in vec3 v_normal;
 
+uniform vec3 u_lightDir;
+
 out vec4 outColor;
 
 void main() {
@@ -18,9 +20,8 @@ void main() {
     color = vec3(0.95, 0.85, 0.35);  // Truck - yellow
   }
 
-  // Apply directional lighting (same sun direction as buildings and roads)
-  vec3 lightDir = normalize(vec3(0.5, 0.8, 0.3));
-  float diffuse = max(0.0, dot(normalize(v_normal), lightDir));
+  // Apply directional lighting
+  float diffuse = max(0.0, dot(normalize(v_normal), u_lightDir));
   float ambient = 0.5;
   float lighting = ambient + diffuse * 0.5;
 
