@@ -59,6 +59,11 @@ float arrowShape(vec2 uv) {
   return max(body, head);
 }
 
+bool isRoadTile(ivec2 coord) {
+  vec4 data = texelFetch(u_tileData, coord, 0);
+  return data.r > 0.5 && data.r < 1.5;
+}
+
 void main() {
   ivec2 coord = ivec2(v_tileCoord);
   vec4 tileData = texelFetch(u_tileData, coord, 0);
@@ -125,6 +130,26 @@ void main() {
       }
       float arrow = arrowShape(arrowUv) * 0.6;
       color = mix(color, vec3(1.0, 0.96, 0.75), arrow);
+    } else {
+      bool hasLeft = coord.x > 0 && isRoadTile(coord + ivec2(-1, 0));
+      bool hasRight = coord.x < int(u_grid.x) - 1 && isRoadTile(coord + ivec2(1, 0));
+      bool hasUp = coord.y > 0 && isRoadTile(coord + ivec2(0, -1));
+      bool hasDown = coord.y < int(u_grid.y) - 1 && isRoadTile(coord + ivec2(0, 1));
+      bool hasHorizontal = hasLeft || hasRight;
+      bool hasVertical = hasUp || hasDown;
+      float arrowNorth = arrowShape(uv);
+      float arrowSouth = arrowShape(vec2(1.0 - uv.x, 1.0 - uv.y));
+      float arrowEast = arrowShape(vec2(uv.y, 1.0 - uv.x));
+      float arrowWest = arrowShape(vec2(1.0 - uv.y, uv.x));
+      float arrowMask = 0.0;
+      if (hasHorizontal && !hasVertical) {
+        arrowMask = max(arrowEast, arrowWest) * 0.35;
+      } else if (hasVertical && !hasHorizontal) {
+        arrowMask = max(arrowNorth, arrowSouth) * 0.35;
+      } else if (hasHorizontal && hasVertical) {
+        arrowMask = max(max(arrowEast, arrowWest), max(arrowNorth, arrowSouth)) * 0.22;
+      }
+      color = mix(color, vec3(0.9, 0.95, 1.0), arrowMask);
     }
 
     if (hasSidewalk) {

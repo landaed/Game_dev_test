@@ -1176,11 +1176,17 @@ function buildBuildingInstances() {
           ? 2.0
           : tileType[i] === 4
             ? 1.6
-            : tileType[i] === 7
-              ? 1.2
-              : tileType[i] === 9
-                ? 2.4
-                : 0.8;
+            : tileType[i] === 5
+              ? 0.3
+              : tileType[i] === 6
+                ? 1.0
+                : tileType[i] === 7
+                  ? 0.6
+                  : tileType[i] === 8
+                    ? 1.1
+                    : tileType[i] === 9
+                      ? 2.2
+                      : 0.8;
     instances.push(x + 0.5, y + 0.5, height + (Math.sin(i) * 0.2 + 0.2), tileType[i]);
   }
   buildingInstances = new Float32Array(instances);

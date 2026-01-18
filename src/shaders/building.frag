@@ -31,6 +31,8 @@ void main() {
   vec2 worldXZ = v_world.xz;
   float buildingSeed = hash(floor(worldXZ));
   vec3 baseColor = buildingBase(v_type, buildingSeed);
+  bool isPark = v_type > 4.5 && v_type < 5.5;
+  bool isNightMarket = v_type > 6.5 && v_type < 7.5;
 
   vec3 normal = vec3(0.0);
   if (abs(v_local.x) > abs(v_local.z)) {
@@ -44,12 +46,29 @@ void main() {
 
   vec3 color = baseColor * lighting;
 
+  if (isPark) {
+    float grassNoise = hash21(v_world.xz * 6.0);
+    vec3 grass = mix(vec3(0.16, 0.34, 0.21), vec3(0.24, 0.48, 0.28), grassNoise);
+    float path = smoothstep(0.12, 0.16, abs(v_local.x)) * smoothstep(0.12, 0.16, abs(v_local.z));
+    color = mix(grass, vec3(0.32, 0.28, 0.22), path * 0.8);
+  }
+
   float isRoof = step(0.95, v_local.y);
-  if (isRoof > 0.5) {
+  if (isRoof > 0.5 && !isPark) {
     color *= 1.15;
     float roofDetail = step(0.7, hash21(v_world.xz * 5.0));
     color = mix(color, color * 0.85, roofDetail * 0.3);
+    if (isNightMarket) {
+      float canopy = step(0.4, fract((v_world.x + v_world.z) * 2.0 + buildingSeed));
+      color = mix(color, vec3(0.85, 0.35, 0.25), canopy * 0.5);
+    }
   } else {
+    if (isPark) {
+      float ao = smoothstep(0.0, 0.08, v_local.y);
+      color *= mix(0.6, 1.0, ao);
+      outColor = vec4(color, 1.0);
+      return;
+    }
     vec2 worldUV = v_world.xz;
     vec2 localUV = v_local.xz;
 
@@ -70,6 +89,10 @@ void main() {
     float windowLit = hash21(floor(worldUV * vec2(4.0, v_height * 3.0))) > 0.4 ? 1.0 : 0.3;
 
     vec3 windowColor = vec3(0.95, 0.90, 0.70) * windowLit;
+    if (isNightMarket) {
+      float lantern = step(0.7, hash21(worldUV * 6.0 + buildingSeed));
+      windowColor = mix(vec3(0.95, 0.75, 0.5), vec3(1.0, 0.45, 0.35), lantern);
+    }
     color = mix(color, color * 0.90, windowFrame * floorMask * 0.3);
     color = mix(color, windowColor, windowInset * floorMask * 0.7);
 
