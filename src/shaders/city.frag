@@ -8,6 +8,7 @@ uniform sampler2D u_metrics2;
 uniform vec2 u_grid;
 uniform float u_time;
 uniform int u_viewMode;
+uniform int u_hideRoadTiles;
 
 in vec2 v_uv;
 in vec2 v_tileCoord;
@@ -96,8 +97,14 @@ void main() {
     vec3 grassLight = vec3(0.25, 0.42, 0.28);
     color = mix(grassDark, grassLight, grass);
   } else if (tileType < 1.5) {
-    bool hasSidewalk = sidewalk > 0.01;
-    float asphalt = fbm(tileUv * 24.0) * 0.2 + 0.2;
+    if (u_hideRoadTiles == 1) {
+      float grass = fbm(tileUv * 14.0);
+      vec3 grassDark = vec3(0.15, 0.28, 0.18);
+      vec3 grassLight = vec3(0.25, 0.42, 0.28);
+      color = mix(grassDark, grassLight, grass);
+    } else {
+      bool hasSidewalk = sidewalk > 0.01;
+      float asphalt = fbm(tileUv * 24.0) * 0.2 + 0.2;
 
     if (!hasSidewalk) {
       color = vec3(0.18, 0.19, 0.20) * asphalt;
@@ -193,10 +200,11 @@ void main() {
       vec3 sidewalkColor = vec3(0.48, 0.50, 0.54) + fbm(tileUv * 20.0) * 0.12;
       color = mix(color, sidewalkColor, slab * 0.8 + curb * 0.5);
       color = mix(color, sidewalkColor * 1.15, slabs * slab * 0.35);
-    } else {
-      float edgeDirt = smoothstep(0.0, 0.15, uv.y) + smoothstep(1.0, 0.85, uv.y);
-      vec3 dirtColor = vec3(0.22, 0.18, 0.14);
-      color = mix(color, dirtColor, edgeDirt * 0.4);
+      } else {
+        float edgeDirt = smoothstep(0.0, 0.15, uv.y) + smoothstep(1.0, 0.85, uv.y);
+        vec3 dirtColor = vec3(0.22, 0.18, 0.14);
+        color = mix(color, dirtColor, edgeDirt * 0.4);
+      }
     }
   } else {
     float seed = hash(v_tileCoord);
