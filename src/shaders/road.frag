@@ -60,21 +60,31 @@ void main() {
     color = mix(color, vec3(0.75, 0.9, 1.0), arrow * 0.2);
   }
 
-  // Enhanced crosswalk with better visibility
+  // Crosswalk only at very ends (intersection points)
   if (hasCrosswalk > 0.5) {
-    float atEnd = smoothstep(0.0, 0.08, v_local.y) + smoothstep(1.0, 0.92, v_local.y);
+    // Only show crosswalk at the immediate ends (first/last 5% of segment)
+    float atStart = smoothstep(0.05, 0.0, v_local.y);
+    float atEnd = smoothstep(0.95, 1.0, v_local.y);
+    float atEdge = atStart + atEnd;
     float zebra = step(0.5, fract(roadX * 12.0));
-    // Make crosswalk brighter and more visible
-    color = mix(color, vec3(0.98, 0.98, 0.98), zebra * atEnd * 0.85);
+    // Only render if we're at the very edge
+    color = mix(color, vec3(0.98, 0.98, 0.98), zebra * atEdge * 0.85);
   }
 
+  // Traffic lights only at intersection points (ends of segments)
   if (hasSignal > 0.5) {
-    float phase = fract(u_time / 6.0 + signalOffset);
-    float green = phase < 0.5 ? 1.0 : 0.0;
-    vec2 lightPos = vec2(0.15, 0.1);
-    float light = smoothstep(0.12, 0.02, distance(v_local, lightPos));
-    vec3 lightColor = mix(vec3(0.9, 0.2, 0.2), vec3(0.2, 0.9, 0.3), green);
-    color = mix(color, lightColor, light * 0.9);
+    float atStart = smoothstep(0.15, 0.0, v_local.y);
+    float atEnd = smoothstep(0.85, 1.0, v_local.y);
+    float atIntersection = atStart + atEnd;
+
+    if (atIntersection > 0.1) {
+      float phase = fract(u_time / 6.0 + signalOffset);
+      float green = phase < 0.5 ? 1.0 : 0.0;
+      vec2 lightPos = vec2(0.15, v_local.y < 0.5 ? 0.05 : 0.95);
+      float light = smoothstep(0.12, 0.02, distance(v_local, lightPos));
+      vec3 lightColor = mix(vec3(0.9, 0.2, 0.2), vec3(0.2, 0.9, 0.3), green);
+      color = mix(color, lightColor, light * 0.9 * atIntersection);
+    }
   }
 
   // Add directional lighting (sun from top-right)
@@ -82,6 +92,20 @@ void main() {
   vec3 normal = vec3(0.0, 1.0, 0.0); // Road is flat
   float lighting = 0.75 + max(0.0, dot(normal, lightDir)) * 0.25;
   color *= lighting;
+
+  // Add noise-based reflections for wet road effect
+  float reflectionNoise = hash(v_local * 80.0);
+  float reflectionMask = smoothstep(0.55, 0.75, reflectionNoise);
+
+  // Specular reflection from light direction
+  vec3 viewDir = normalize(vec3(0.0, 1.0, 0.0));
+  vec3 reflectDir = reflect(-lightDir, normal);
+  float spec = pow(max(dot(viewDir, reflectDir), 0.0), 16.0);
+
+  // Apply subtle specular highlights on asphalt (not sidewalk)
+  float onRoad = 1.0 - clamp(sidewalkMask, 0.0, 1.0);
+  vec3 specularColor = vec3(0.9, 0.95, 1.0) * spec * 0.3 * reflectionMask * onRoad;
+  color += specularColor;
 
   outColor = vec4(color, 0.95);
 }

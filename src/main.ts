@@ -928,15 +928,19 @@ function generateRoadSplines() {
 
   const horizontalCount = 3;
   const verticalCount = 3;
-  const amplitude = 2.4;
+  const baseAmplitude = 2.4;
   const phaseSeed = Math.random() * Math.PI * 2;
 
+  // Improved arterial roads with more organic curves
   for (let i = 0; i < horizontalCount; i++) {
     const baseY = Math.round(((i + 1) * GRID_HEIGHT) / (horizontalCount + 1));
     const phase = phaseSeed + i * 1.7;
+    const amplitude = baseAmplitude * (0.8 + Math.random() * 0.4); // Vary amplitude per road
     const points: RoadPoint[] = [];
     for (let x = 0; x < GRID_WIDTH; x++) {
-      const wobble = Math.sin((x / GRID_WIDTH) * Math.PI * 2 + phase) * amplitude;
+      // Add secondary frequency for more natural curves
+      const wobble = Math.sin((x / GRID_WIDTH) * Math.PI * 2 + phase) * amplitude +
+                     Math.sin((x / GRID_WIDTH) * Math.PI * 4.5 + phase * 0.7) * (amplitude * 0.3);
       const y = clamp(baseY + wobble, 1, GRID_HEIGHT - 2);
       points.push({ x, z: y });
     }
@@ -946,28 +950,55 @@ function generateRoadSplines() {
   for (let i = 0; i < verticalCount; i++) {
     const baseX = Math.round(((i + 1) * GRID_WIDTH) / (verticalCount + 1));
     const phase = phaseSeed + i * 1.9;
+    const amplitude = baseAmplitude * (0.8 + Math.random() * 0.4);
     const points: RoadPoint[] = [];
     for (let y = 0; y < GRID_HEIGHT; y++) {
-      const wobble = Math.sin((y / GRID_HEIGHT) * Math.PI * 2 + phase) * amplitude;
+      const wobble = Math.sin((y / GRID_HEIGHT) * Math.PI * 2 + phase) * amplitude +
+                     Math.sin((y / GRID_HEIGHT) * Math.PI * 4.5 + phase * 0.7) * (amplitude * 0.3);
       const x = clamp(baseX + wobble, 1, GRID_WIDTH - 2);
       points.push({ x, z: y });
     }
     roadPolylines.push({ points, isArterial: true, roadWidth: "wide" });
   }
 
+  // Improved secondary roads with more organic curves and varied lengths
   for (let x = 2; x < GRID_WIDTH - 2; x += 6) {
     for (let y = 2; y < GRID_HEIGHT - 2; y += 6) {
       if (Math.random() < 0.5) {
-        const endY = clamp(y + (Math.random() > 0.5 ? 4 : -4), 1, GRID_HEIGHT - 2);
+        const length = 4 + Math.floor(Math.random() * 8); // Varied length: 4-11 tiles
+        const endY = clamp(y + (Math.random() > 0.5 ? length : -length), 1, GRID_HEIGHT - 2);
         const rand = Math.random();
         const roadWidth: RoadWidth = rand < 0.3 ? "narrow" : rand < 0.7 ? "medium" : "wide";
-        roadPolylines.push({ points: [{ x, z: y }, { x, z: endY }], isArterial: false, roadWidth });
+
+        // Add slight curve to vertical roads
+        const points: RoadPoint[] = [];
+        const segments = Math.abs(endY - y);
+        for (let i = 0; i <= segments; i++) {
+          const t = i / segments;
+          const currentY = y + (endY - y) * t;
+          const curveOffset = Math.sin(t * Math.PI) * (1.2 + Math.random() * 0.8);
+          const currentX = x + curveOffset;
+          points.push({ x: clamp(currentX, 1, GRID_WIDTH - 2), z: currentY });
+        }
+        roadPolylines.push({ points, isArterial: false, roadWidth });
       }
       if (Math.random() < 0.5) {
-        const endX = clamp(x + (Math.random() > 0.5 ? 4 : -4), 1, GRID_WIDTH - 2);
+        const length = 4 + Math.floor(Math.random() * 8);
+        const endX = clamp(x + (Math.random() > 0.5 ? length : -length), 1, GRID_WIDTH - 2);
         const rand = Math.random();
         const roadWidth: RoadWidth = rand < 0.3 ? "narrow" : rand < 0.7 ? "medium" : "wide";
-        roadPolylines.push({ points: [{ x, z: y }, { x: endX, z: y }], isArterial: false, roadWidth });
+
+        // Add slight curve to horizontal roads
+        const points: RoadPoint[] = [];
+        const segments = Math.abs(endX - x);
+        for (let i = 0; i <= segments; i++) {
+          const t = i / segments;
+          const currentX = x + (endX - x) * t;
+          const curveOffset = Math.sin(t * Math.PI) * (1.2 + Math.random() * 0.8);
+          const currentY = y + curveOffset;
+          points.push({ x: currentX, z: clamp(currentY, 1, GRID_HEIGHT - 2) });
+        }
+        roadPolylines.push({ points, isArterial: false, roadWidth });
       }
     }
   }
@@ -1884,14 +1915,16 @@ function addBuildingAccessSplines() {
       if (tileType[neighborIdx] === 1) {
         // Adjacent to a road, create a thin access spline
         const roadPos = tileCenter(neighborIdx);
-        const midX = (buildingPos.x + roadPos.x) / 2;
-        const midZ = (buildingPos.z + roadPos.z) / 2;
 
-        // Create a short curved path
+        // Improved path with smoother connection - starts further from building, ends closer to road center
+        const startOffset = 0.35; // Start further from building edge
+        const endOffset = 0.05; // End very close to road center
+        const controlOffset = 0.25; // Control point for curve
+
         const points: RoadPoint[] = [
-          { x: buildingPos.x + dir.dx * 0.2, z: buildingPos.z + dir.dz * 0.2 },
-          { x: midX, z: midZ },
-          { x: roadPos.x - dir.dx * 0.1, z: roadPos.z - dir.dz * 0.1 }
+          { x: buildingPos.x + dir.dx * startOffset, z: buildingPos.z + dir.dz * startOffset },
+          { x: buildingPos.x + dir.dx * controlOffset + roadPos.x - dir.dx * controlOffset, z: buildingPos.z + dir.dz * controlOffset + roadPos.z - dir.dz * controlOffset },
+          { x: roadPos.x - dir.dx * endOffset, z: roadPos.z - dir.dz * endOffset }
         ];
 
         roadPolylines.push({
@@ -3033,6 +3066,26 @@ function agentSpeed(type: AgentType, tileIndex: number) {
   return base * limitFactor * sidewalkPenalty;
 }
 
+// Helper function to check for collisions with other agents
+function checkCollision(agent: Agent, proposedPos: { x: number; z: number }): boolean {
+  const collisionRadius = agent.type === "pedestrian" ? 0.15 : agent.type === "scooter" ? 0.18 : agent.type === "car" ? 0.25 : 0.35;
+
+  for (const other of agents) {
+    if (other.id === agent.id) continue;
+    const otherRadius = other.type === "pedestrian" ? 0.15 : other.type === "scooter" ? 0.18 : other.type === "car" ? 0.25 : 0.35;
+    const minDist = collisionRadius + otherRadius;
+
+    const dx = proposedPos.x - other.position.x;
+    const dz = proposedPos.z - other.position.z;
+    const distSq = dx * dx + dz * dz;
+
+    if (distSq < minDist * minDist) {
+      return true; // Collision detected
+    }
+  }
+  return false;
+}
+
 let updateAgentDebugCounter = 0;
 function updateAgents(dt: number) {
   let movedCount = 0;
@@ -3045,31 +3098,52 @@ function updateAgents(dt: number) {
       continue;
     }
 
+    // Calculate proposed new position
+    let proposedPos = { x: agent.position.x, z: agent.position.z };
+
     if (agent.splineSegment !== null && agent.splineSegment >= 0 && agent.splineSegment < roadSegments.length) {
       const segment = roadSegments[agent.splineSegment];
       const speed = agentSpeed(agent.type, currentIndex) * dt * 0.015;
-      agent.splineProgress += speed * agent.splineDirection;
+      const newProgress = agent.splineProgress + speed * agent.splineDirection;
 
-      if (agent.splineProgress > 1.0 || agent.splineProgress < 0.0) {
-        agent.splineProgress = Math.max(0, Math.min(1, agent.splineProgress));
-        const currentPos = tileCenter(currentIndex);
-        agent.splineSegment = findNearestSplineSegment(currentPos, agent.type);
-        agent.splineProgress = 0;
+      if (newProgress > 1.0 || newProgress < 0.0) {
+        const clampedProgress = Math.max(0, Math.min(1, newProgress));
+        const basePos = getSplinePosition(agent.splineSegment, clampedProgress);
+        proposedPos = applySplineLaneOffset(basePos, agent.splineSegment, clampedProgress, agent);
+
+        if (!checkCollision(agent, proposedPos)) {
+          agent.splineProgress = clampedProgress;
+          const currentPos = tileCenter(currentIndex);
+          agent.splineSegment = findNearestSplineSegment(currentPos, agent.type);
+          agent.splineProgress = 0;
+          agent.position.x = proposedPos.x;
+          agent.position.z = proposedPos.z;
+        }
+      } else {
+        const basePos = getSplinePosition(agent.splineSegment, newProgress);
+        proposedPos = applySplineLaneOffset(basePos, agent.splineSegment, newProgress, agent);
+
+        if (!checkCollision(agent, proposedPos)) {
+          agent.splineProgress = newProgress;
+          agent.position.x = proposedPos.x;
+          agent.position.z = proposedPos.z;
+        }
       }
-
-      const basePos = getSplinePosition(agent.splineSegment, agent.splineProgress);
-      const offsetPos = applySplineLaneOffset(basePos, agent.splineSegment, agent.splineProgress, agent);
-      agent.position.x = offsetPos.x;
-      agent.position.z = offsetPos.z;
     } else {
       const currentPos = applyLaneOffset(tileCenter(currentIndex), currentIndex, nextIndex, agent);
       const nextPos = applyLaneOffset(tileCenter(nextIndex), currentIndex, nextIndex, agent);
       const speed = agentSpeed(agent.type, currentIndex) * dt;
-      agent.progress += speed;
-      if (agent.progress > 0.01) movedCount++;
-      const t = agent.progress;
-      agent.position.x = currentPos.x + (nextPos.x - currentPos.x) * t;
-      agent.position.z = currentPos.z + (nextPos.z - currentPos.z) * t;
+      const newProgress = agent.progress + speed;
+      if (newProgress > 0.01) movedCount++;
+      const t = newProgress;
+      proposedPos.x = currentPos.x + (nextPos.x - currentPos.x) * t;
+      proposedPos.z = currentPos.z + (nextPos.z - currentPos.z) * t;
+
+      if (!checkCollision(agent, proposedPos)) {
+        agent.progress = newProgress;
+        agent.position.x = proposedPos.x;
+        agent.position.z = proposedPos.z;
+      }
     }
 
     agent.progress += agentSpeed(agent.type, currentIndex) * dt;
