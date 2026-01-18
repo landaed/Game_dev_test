@@ -173,13 +173,13 @@ function mat4Identity() {
 
 function mat4Multiply(a: Float32Array, b: Float32Array) {
   const out = new Float32Array(16);
-  for (let i = 0; i < 4; i++) {
-    for (let j = 0; j < 4; j++) {
-      out[i * 4 + j] =
-        a[i * 4 + 0] * b[0 * 4 + j] +
-        a[i * 4 + 1] * b[1 * 4 + j] +
-        a[i * 4 + 2] * b[2 * 4 + j] +
-        a[i * 4 + 3] * b[3 * 4 + j];
+  for (let col = 0; col < 4; col++) {
+    for (let row = 0; row < 4; row++) {
+      out[row + col * 4] =
+        a[row + 0 * 4] * b[0 + col * 4] +
+        a[row + 1 * 4] * b[1 + col * 4] +
+        a[row + 2 * 4] * b[2 + col * 4] +
+        a[row + 3 * 4] * b[3 + col * 4];
     }
   }
   return out;
