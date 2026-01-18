@@ -391,6 +391,20 @@ type RoadSegment = {
   oneWay: number;
 };
 
+type RoadPoint = { x: number; z: number };
+type RoadSegment = {
+  id: number;
+  tiles: number[];
+  points: RoadPoint[];
+  lanes: number;
+  sidewalk: number;
+  speed: number;
+  isArterial: boolean;
+  hasCrosswalk: boolean;
+  hasSignal: boolean;
+  oneWay: number;
+};
+
 const agents: Agent[] = [];
 let selectedAgent: Agent | null = null;
 let selectedRoadSegment: number | null = null;
