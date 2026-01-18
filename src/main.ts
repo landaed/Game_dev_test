@@ -9,6 +9,193 @@ import "./styles.css";
 type TileType = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 type AgentType = "pedestrian" | "scooter" | "car" | "truck";
 
+class AudioEngine {
+  private ctx: AudioContext | null = null;
+  private masterGain: GainNode | null = null;
+  private uiGain: GainNode | null = null;
+  private gameGain: GainNode | null = null;
+  private listener: AudioListener | null = null;
+  private ambientSources: Map<string, AudioBufferSourceNode> = new Map();
+  private initialized = false;
+
+  async init() {
+    if (this.initialized) return;
+    try {
+      this.ctx = new AudioContext();
+      this.masterGain = this.ctx.createGain();
+      this.masterGain.gain.value = 0.3;
+      this.masterGain.connect(this.ctx.destination);
+
+      this.uiGain = this.ctx.createGain();
+      this.uiGain.gain.value = 0.5;
+      this.uiGain.connect(this.masterGain);
+
+      this.gameGain = this.ctx.createGain();
+      this.gameGain.gain.value = 0.4;
+      this.gameGain.connect(this.masterGain);
+
+      this.listener = this.ctx.listener;
+      this.initialized = true;
+    } catch (e) {
+      console.warn("Audio context init failed:", e);
+    }
+  }
+
+  private createTone(freq: number, duration: number, type: OscillatorType = "sine"): AudioBuffer | null {
+    if (!this.ctx) return null;
+    const sampleRate = this.ctx.sampleRate;
+    const buffer = this.ctx.createBuffer(1, duration * sampleRate, sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) {
+      const t = i / sampleRate;
+      const envelope = Math.exp(-3 * t);
+      if (type === "sine") {
+        data[i] = Math.sin(2 * Math.PI * freq * t) * envelope;
+      } else if (type === "square") {
+        data[i] = (Math.sin(2 * Math.PI * freq * t) > 0 ? 1 : -1) * envelope;
+      } else if (type === "sawtooth") {
+        data[i] = (2 * ((freq * t) % 1) - 1) * envelope;
+      }
+    }
+    return buffer;
+  }
+
+  private createNoise(duration: number, color: "white" | "pink" = "white"): AudioBuffer | null {
+    if (!this.ctx) return null;
+    const sampleRate = this.ctx.sampleRate;
+    const buffer = this.ctx.createBuffer(1, duration * sampleRate, sampleRate);
+    const data = buffer.getChannelData(0);
+    let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+    for (let i = 0; i < data.length; i++) {
+      const white = Math.random() * 2 - 1;
+      if (color === "pink") {
+        b0 = 0.99886 * b0 + white * 0.0555179;
+        b1 = 0.99332 * b1 + white * 0.0750759;
+        b2 = 0.96900 * b2 + white * 0.1538520;
+        b3 = 0.86650 * b3 + white * 0.3104856;
+        b4 = 0.55000 * b4 + white * 0.5329522;
+        b5 = -0.7616 * b5 - white * 0.0168980;
+        data[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11;
+        b6 = white * 0.115926;
+      } else {
+        data[i] = white;
+      }
+      const t = i / sampleRate;
+      const envelope = Math.exp(-2 * t);
+      data[i] *= envelope * 0.3;
+    }
+    return buffer;
+  }
+
+  playUIClick() {
+    if (!this.ctx || !this.uiGain) return;
+    const buffer = this.createTone(800, 0.08, "sine");
+    if (!buffer) return;
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+    const gain = this.ctx.createGain();
+    gain.gain.value = 0.2;
+    source.connect(gain);
+    gain.connect(this.uiGain);
+    source.start();
+  }
+
+  playUIHover() {
+    if (!this.ctx || !this.uiGain) return;
+    const buffer = this.createTone(1200, 0.05, "sine");
+    if (!buffer) return;
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+    const gain = this.ctx.createGain();
+    gain.gain.value = 0.1;
+    source.connect(gain);
+    gain.connect(this.uiGain);
+    source.start();
+  }
+
+  playUISuccess() {
+    if (!this.ctx || !this.uiGain) return;
+    const osc = this.ctx.createOscillator();
+    osc.frequency.setValueAtTime(600, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(900, this.ctx.currentTime + 0.15);
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.15, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.15);
+    osc.connect(gain);
+    gain.connect(this.uiGain);
+    osc.start();
+    osc.stop(this.ctx.currentTime + 0.15);
+  }
+
+  playUIError() {
+    if (!this.ctx || !this.uiGain) return;
+    const osc = this.ctx.createOscillator();
+    osc.frequency.setValueAtTime(400, this.ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(200, this.ctx.currentTime + 0.2);
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.15, this.ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.2);
+    osc.connect(gain);
+    gain.connect(this.uiGain);
+    osc.start();
+    osc.stop(this.ctx.currentTime + 0.2);
+  }
+
+  updateListener(x: number, y: number, z: number, lookX: number, lookY: number, lookZ: number) {
+    if (!this.listener) return;
+    this.listener.positionX.value = x;
+    this.listener.positionY.value = y;
+    this.listener.positionZ.value = z;
+    this.listener.forwardX.value = lookX - x;
+    this.listener.forwardY.value = lookY - y;
+    this.listener.forwardZ.value = lookZ - z;
+    this.listener.upY.value = 1;
+  }
+
+  startAmbientTraffic() {
+    if (!this.ctx || !this.gameGain || this.ambientSources.has("traffic")) return;
+    const buffer = this.createNoise(4, "pink");
+    if (!buffer) return;
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    const panner = this.ctx.createPanner();
+    panner.panningModel = "HRTF";
+    panner.distanceModel = "exponential";
+    panner.refDistance = 5;
+    panner.maxDistance = 30;
+    panner.rolloffFactor = 2;
+    panner.positionX.value = GRID_WIDTH * 0.5;
+    panner.positionY.value = 0;
+    panner.positionZ.value = GRID_HEIGHT * 0.5;
+    const gain = this.ctx.createGain();
+    gain.gain.value = 0.15;
+    source.connect(gain);
+    gain.connect(panner);
+    panner.connect(this.gameGain);
+    source.start();
+    this.ambientSources.set("traffic", source);
+  }
+
+  stopAllAmbient() {
+    this.ambientSources.forEach(source => {
+      source.stop();
+      source.disconnect();
+    });
+    this.ambientSources.clear();
+  }
+
+  setGameVolume(distance: number) {
+    if (!this.gameGain) return;
+    const maxDist = 35;
+    const minDist = 15;
+    const volume = distance > maxDist ? 0 : distance < minDist ? 0.4 : 0.4 * (1 - (distance - minDist) / (maxDist - minDist));
+    this.gameGain.gain.setValueAtTime(volume, this.ctx?.currentTime || 0);
+  }
+}
+
+const audioEngine = new AudioEngine();
+
 const GRID_WIDTH = 40;
 const GRID_HEIGHT = 30;
 const TILE_COUNT = GRID_WIDTH * GRID_HEIGHT;
@@ -433,6 +620,9 @@ function updateCamera() {
   const view = mat4LookAt(eye, target, [0, 1, 0]);
   viewProj = mat4Multiply(projection, view);
   invViewProj = mat4Invert(viewProj);
+
+  audioEngine.updateListener(eyeX, eyeY, eyeZ, centerX, 0, centerZ);
+  audioEngine.setGameVolume(cameraDistance);
 }
 
 function projectToScreen(pos: { x: number; y: number; z: number }) {
@@ -743,21 +933,39 @@ function updateBottomBar() {
   `;
 
   bottomBar.querySelectorAll("button[data-view]").forEach((btn) => {
+    btn.addEventListener("mouseenter", () => audioEngine.playUIHover());
     btn.addEventListener("click", () => {
+      audioEngine.playUIClick();
       viewMode = Number((btn as HTMLButtonElement).dataset.view);
       updateBottomBar();
     });
   });
 
   bottomBar.querySelectorAll("button[data-speed]").forEach((btn) => {
+    btn.addEventListener("mouseenter", () => audioEngine.playUIHover());
     btn.addEventListener("click", () => {
+      audioEngine.playUIClick();
       simSpeed = Number((btn as HTMLButtonElement).dataset.speed);
       updateBottomBar();
     });
   });
 
-  bottomBar.querySelector("button[data-save]")?.addEventListener("click", saveGame);
-  bottomBar.querySelector("button[data-load]")?.addEventListener("click", loadGame);
+  const saveBtn = bottomBar.querySelector("button[data-save]");
+  const loadBtn = bottomBar.querySelector("button[data-load]");
+  if (saveBtn) {
+    saveBtn.addEventListener("mouseenter", () => audioEngine.playUIHover());
+    saveBtn.addEventListener("click", () => {
+      audioEngine.playUIClick();
+      saveGame();
+    });
+  }
+  if (loadBtn) {
+    loadBtn.addEventListener("mouseenter", () => audioEngine.playUIHover());
+    loadBtn.addEventListener("click", () => {
+      audioEngine.playUIClick();
+      loadGame();
+    });
+  }
 }
 
 function updateLeftPanel() {
@@ -779,7 +987,11 @@ function updateLeftPanel() {
   `;
 
   actionList.querySelectorAll("button").forEach((button) => {
-    button.addEventListener("click", () => handleAction(button.dataset.action ?? ""));
+    button.addEventListener("mouseenter", () => audioEngine.playUIHover());
+    button.addEventListener("click", () => {
+      audioEngine.playUIClick();
+      handleAction(button.dataset.action ?? "");
+    });
   });
 
   const policyListEl = leftPanel.querySelector("#policy-list") as HTMLDivElement;
@@ -796,7 +1008,11 @@ function updateLeftPanel() {
     )
     .join("");
   policyListEl.querySelectorAll("button").forEach((button) => {
-    button.addEventListener("click", () => handlePolicy(button.dataset.policy ?? ""));
+    button.addEventListener("mouseenter", () => audioEngine.playUIHover());
+    button.addEventListener("click", () => {
+      audioEngine.playUIClick();
+      handlePolicy(button.dataset.policy ?? "");
+    });
   });
 }
 
@@ -873,10 +1089,12 @@ function formatMoney(value: number) {
 
 function handleAction(action: string) {
   if (selectedIndex === null) {
+    audioEngine.playUIError();
     showToast("Select a road tile first.");
     return;
   }
   if (tileType[selectedIndex] !== 1) {
+    audioEngine.playUIError();
     showToast("Actions only apply to road tiles.");
     return;
   }
@@ -887,6 +1105,7 @@ function handleAction(action: string) {
     cost = 1500;
   }
   if (state.cash < cost || state.politicalPoints < ppCost) {
+    audioEngine.playUIError();
     showToast("Not enough cash or political points.");
     return;
   }
@@ -915,6 +1134,7 @@ function handleAction(action: string) {
 
   state.cash -= cost;
   state.politicalPoints -= ppCost;
+  audioEngine.playUISuccess();
   updateRightPanel();
   updateLeftPanel();
   showToast("Action applied.");
@@ -926,6 +1146,7 @@ function handlePolicy(id: string) {
 
   if (!policy.active) {
     if (state.politicalPoints < policy.pp || state.cash < policy.cost) {
+      audioEngine.playUIError();
       showToast("Not enough resources to enact policy.");
       return;
     }
@@ -933,10 +1154,12 @@ function handlePolicy(id: string) {
     state.cash -= policy.cost;
     policy.active = true;
     state.recentDiscontent += 4;
+    audioEngine.playUISuccess();
     showToast(`${policy.name} enacted.`);
   } else {
     policy.active = false;
     state.recentDiscontent += 2;
+    audioEngine.playUIClick();
     showToast(`${policy.name} repealed.`);
   }
   updateLeftPanel();
@@ -1382,7 +1605,10 @@ function loop() {
   requestAnimationFrame(frame);
 }
 
-canvas.addEventListener("click", (event) => {
+canvas.addEventListener("click", async (event) => {
+  await audioEngine.init();
+  audioEngine.playUIClick();
+
   const rect = canvas.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const y = event.clientY - rect.top;
@@ -1479,6 +1705,15 @@ function initUI() {
     "Mayor, welcome to Sidewalk Savior",
     "Your city is infamous for missing sidewalks and scooter swarms. Fix the chaos without losing elections or bankrupting the treasury."
   );
+
+  const modalCloseBtn = document.getElementById("modal-close");
+  if (modalCloseBtn) {
+    modalCloseBtn.addEventListener("click", async () => {
+      await audioEngine.init();
+      audioEngine.startAmbientTraffic();
+      audioEngine.playUIClick();
+    });
+  }
 }
 
 initUI();
